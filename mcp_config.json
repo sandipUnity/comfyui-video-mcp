@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "comfyui-video": {
+      "command": "python",
+      "args": ["C:/Users/Sandip/Documents/Claude/comfyui-video-mcp/server.py"],
+      "env": {
+        "ANTHROPIC_API_KEY": "YOUR_API_KEY_HERE"
+      }
+    }
+  }
+}

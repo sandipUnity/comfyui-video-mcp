@@ -1,0 +1,89 @@
+{
+  "1": {
+    "inputs": {
+      "model_name": "{{CHECKPOINT}}",
+      "precision": "bf16"
+    },
+    "class_type": "WanVideoModelLoader",
+    "_meta": { "title": "Load Wan2.1 Model" }
+  },
+  "2": {
+    "inputs": {
+      "clip_name": "umt5-xxl-enc-bf16.safetensors",
+      "type": "wan"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": { "title": "Load Text Encoder" }
+  },
+  "3": {
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": { "title": "Load VAE" }
+  },
+  "4": {
+    "inputs": {
+      "text": "{{POSITIVE_PROMPT}}",
+      "clip": ["2", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "Positive Prompt" }
+  },
+  "5": {
+    "inputs": {
+      "text": "{{NEGATIVE_PROMPT}}",
+      "clip": ["2", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "Negative Prompt" }
+  },
+  "6": {
+    "inputs": {
+      "width": {{WIDTH}},
+      "height": {{HEIGHT}},
+      "num_frames": {{FRAMES}},
+      "batch_size": 1
+    },
+    "class_type": "EmptyWanLatentVideo",
+    "_meta": { "title": "Empty Latent Video" }
+  },
+  "7": {
+    "inputs": {
+      "seed": {{SEED}},
+      "steps": {{STEPS}},
+      "cfg": {{CFG}},
+      "sampler_name": "uni_pc",
+      "scheduler": "simple",
+      "denoise": 1.0,
+      "model": ["1", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["6", 0]
+    },
+    "class_type": "KSampler",
+    "_meta": { "title": "KSampler" }
+  },
+  "8": {
+    "inputs": {
+      "samples": ["7", 0],
+      "vae": ["3", 0]
+    },
+    "class_type": "VAEDecode",
+    "_meta": { "title": "VAE Decode" }
+  },
+  "9": {
+    "inputs": {
+      "frame_rate": {{FPS}},
+      "loop_count": 0,
+      "filename_prefix": "{{OUTPUT_PREFIX}}",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 19,
+      "save_metadata": true,
+      "images": ["8", 0]
+    },
+    "class_type": "VHS_VideoCombine",
+    "_meta": { "title": "Video Combine" }
+  }
+}

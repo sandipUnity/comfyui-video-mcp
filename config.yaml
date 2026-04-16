@@ -1,0 +1,60 @@
+# ComfyUI Video MCP Pipeline Configuration
+
+comfyui:
+  host: "127.0.0.1"
+  port: 8188
+  timeout: 300           # seconds to wait for generation
+  output_dir: "output"
+
+pipeline:
+  default_model: "animatediff"   # animatediff | svd | cogvideox | wan21
+  default_frames: 24
+  default_fps: 8
+  default_width: 512
+  default_height: 512
+  default_steps: 20
+  default_cfg: 7.5
+
+models:
+  animatediff:
+    checkpoint: "v1-5-pruned-emaonly.safetensors"
+    motion_module: "mm_sd_v15_v2.ckpt"
+    workflow: "workflows/animatediff_api.json"
+  svd:
+    checkpoint: "svd_xt.safetensors"
+    workflow: "workflows/svd_api.json"
+  cogvideox:
+    checkpoint: "CogVideoX-5b"
+    workflow: "workflows/cogvideox_api.json"
+  wan21:
+    checkpoint: "Wan2.1-T2V-1.3B"
+    workflow: "workflows/wan21_api.json"
+
+montage:
+  default_transition: "fade"     # fade | dissolve | wipe | slide | none
+  transition_duration: 0.5       # seconds
+  default_resolution: "1280x720"
+  default_fps: 24
+  default_music: ""              # path to background music file
+  music_volume: 0.3
+
+idea_generation:
+  # Provider options:
+  #   auto    → uses Claude if ANTHROPIC_API_KEY is set, else Ollama, else offline templates
+  #   claude  → Claude API (needs ANTHROPIC_API_KEY env var — best quality)
+  #   ollama  → local Ollama (no API key needed — install ollama.ai + pull a model)
+  #   offline → pure template-based (no LLM — zero dependencies, basic quality)
+  provider: "auto"
+  claude_model: "claude-opus-4-6"
+  ollama_model: "llama3.2"        # or llama3.1, mistral, qwen2.5, etc.
+  ollama_host: "http://localhost:11434"
+  ideas_per_request: 5
+  scenes_per_idea: 4
+
+# Skill frameworks from higgsfield-seedance2-jineng (auto-detected from notes)
+# Available: cinematic, anime, 3d_cgi, cartoon, fight_scenes, motion_design,
+#            ecommerce, social_hook, music_video, brand_story, fashion, food, real_estate
+skills:
+  default_skill: "auto"           # auto-detect from notes, or set a specific skill id
+  inject_quality_boosters: true   # add skill's quality tags to every ComfyUI prompt
+  inject_style_tags: true         # add style identifier tags

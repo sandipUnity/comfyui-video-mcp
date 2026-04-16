@@ -1,0 +1,95 @@
+{
+  "1": {
+    "inputs": {
+      "ckpt_name": "{{CHECKPOINT}}"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": { "title": "Load Checkpoint" }
+  },
+  "2": {
+    "inputs": {
+      "model_name": "{{MOTION_MODULE}}",
+      "beta_schedule": "sqrt_linear (AnimateDiff)"
+    },
+    "class_type": "ADE_LoadAnimateDiffModel",
+    "_meta": { "title": "Load AnimateDiff Model" }
+  },
+  "3": {
+    "inputs": {
+      "model": ["1", 0],
+      "motion_model": ["2", 0],
+      "motion_lora": null,
+      "context_options": null,
+      "sample_settings": null,
+      "mask_motion_values": null,
+      "ad_keyframes": null,
+      "start_percent": 0.0,
+      "end_percent": 1.0
+    },
+    "class_type": "ADE_ApplyAnimateDiffModel",
+    "_meta": { "title": "Apply AnimateDiff Model" }
+  },
+  "4": {
+    "inputs": {
+      "text": "{{POSITIVE_PROMPT}}",
+      "clip": ["1", 1]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "CLIP Text Encode (Positive)" }
+  },
+  "5": {
+    "inputs": {
+      "text": "{{NEGATIVE_PROMPT}}",
+      "clip": ["1", 1]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "CLIP Text Encode (Negative)" }
+  },
+  "6": {
+    "inputs": {
+      "width": {{WIDTH}},
+      "height": {{HEIGHT}},
+      "batch_size": {{FRAMES}}
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": { "title": "Empty Latent Image" }
+  },
+  "7": {
+    "inputs": {
+      "seed": {{SEED}},
+      "steps": {{STEPS}},
+      "cfg": {{CFG}},
+      "sampler_name": "euler_ancestral",
+      "scheduler": "karras",
+      "denoise": 1.0,
+      "model": ["3", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["6", 0]
+    },
+    "class_type": "KSampler",
+    "_meta": { "title": "KSampler" }
+  },
+  "8": {
+    "inputs": {
+      "samples": ["7", 0],
+      "vae": ["1", 2]
+    },
+    "class_type": "VAEDecode",
+    "_meta": { "title": "VAE Decode" }
+  },
+  "9": {
+    "inputs": {
+      "frame_rate": {{FPS}},
+      "loop_count": 0,
+      "filename_prefix": "{{OUTPUT_PREFIX}}",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 19,
+      "save_metadata": true,
+      "images": ["8", 0]
+    },
+    "class_type": "VHS_VideoCombine",
+    "_meta": { "title": "Video Combine" }
+  }
+}
