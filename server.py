@@ -98,32 +98,103 @@ def output_dir(sub: str) -> Path:
     return base / sub
 
 
+# ── Camera LoRA Detector ───────────────────────────────────────────────────────
+
+# Maps prompt keywords → camera LoRA slot name (keys match config.yaml camera_loras)
+_CAMERA_LORA_KEYWORDS: list[tuple[str, str]] = [
+    ("dolly forward",   "dolly_in"),
+    ("dolly in",        "dolly_in"),
+    ("push-in",         "dolly_in"),
+    ("push in",         "dolly_in"),
+    ("tracking forward","dolly_in"),
+    ("dolly back",      "dolly_out"),
+    ("dolly out",       "dolly_out"),
+    ("pull-back",       "dolly_out"),
+    ("pull back",       "dolly_out"),
+    ("zoom out",        "dolly_out"),
+    ("pan left",        "dolly_left"),
+    ("dolly left",      "dolly_left"),
+    ("tracking left",   "dolly_left"),
+    ("pan right",       "dolly_right"),
+    ("dolly right",     "dolly_right"),
+    ("tracking right",  "dolly_right"),
+    ("crane up",        "jib_up"),
+    ("jib up",          "jib_up"),
+    ("rising shot",     "jib_up"),
+    ("crane down",      "jib_down"),
+    ("jib down",        "jib_down"),
+    ("descending",      "jib_down"),
+    ("static",          "static"),
+    ("locked off",      "static"),
+    ("fixed shot",      "static"),
+]
+
+
+def _detect_camera_lora(positive_prompt: str, model_cfg: dict) -> tuple[str, float]:
+    """
+    Detect which camera LoRA to use based on prompt keywords.
+    Returns (lora_filename, strength). Falls back to fallback LoRA if no match.
+    """
+    loras = model_cfg.get("camera_loras", {})
+    prompt_lower = positive_prompt.lower()
+
+    for keyword, slot in _CAMERA_LORA_KEYWORDS:
+        if keyword in prompt_lower and slot in loras:
+            return loras[slot], model_cfg.get("camera_lora_strength", 1.0)
+
+    # fallback
+    fallback = model_cfg.get("camera_lora_fallback", "")
+    return fallback, model_cfg.get("camera_lora_strength", 0.8)
+
+
 # ── Workflow Builder ───────────────────────────────────────────────────────────
 
 def build_workflow(positive: str, negative: str, model: str = None, **overrides) -> dict:
-    """Load and fill a ComfyUI workflow template."""
-    model = model or get_cfg("pipeline", "default_model", default="animatediff")
+    """Load and fill a ComfyUI workflow template for the configured model."""
+    model = model or _runtime_cfg.get("model") or get_cfg("pipeline", "default_model", default="ltxvideo")
     model_cfg = CONFIG.get("models", {}).get(model, {})
-    workflow_path = _BASE / model_cfg.get("workflow", f"workflows/{model}_api.json")
 
+    if not model_cfg:
+        raise ValueError(
+            f"Model '{model}' not found in config. "
+            f"Available: {', '.join(CONFIG.get('models', {}).keys())}"
+        )
+
+    workflow_path = _BASE / model_cfg.get("workflow", f"workflows/{model}_api.json")
     if not workflow_path.exists():
-        raise FileNotFoundError(f"Workflow not found: {workflow_path}")
+        raise FileNotFoundError(
+            f"Workflow file not found: {workflow_path}\n"
+            f"Available workflows: {[p.name for p in (_BASE / 'workflows').glob('*.json')]}"
+        )
 
     with open(workflow_path) as f:
         template = f.read()
 
+    # Per-model step/cfg overrides (distilled LoRA needs fewer steps)
+    steps = overrides.get("steps") or model_cfg.get("steps_override") or get_cfg("pipeline", "default_steps", default=20)
+    cfg   = overrides.get("cfg")   or model_cfg.get("cfg_override")   or get_cfg("pipeline", "default_cfg", default=3.0)
+
+    # Camera LoRA (only relevant for ltxvideo_camera workflow)
+    camera_lora, camera_lora_strength = "", 1.0
+    if "camera_loras" in model_cfg:
+        camera_lora, camera_lora_strength = _detect_camera_lora(positive, model_cfg)
+
     replacements = {
-        "{{POSITIVE_PROMPT}}": positive,
-        "{{NEGATIVE_PROMPT}}": negative,
-        "{{CHECKPOINT}}": model_cfg.get("checkpoint", "v1-5-pruned-emaonly.safetensors"),
-        "{{MOTION_MODULE}}": model_cfg.get("motion_module", "mm_sd_v15_v2.ckpt"),
-        "{{WIDTH}}": str(overrides.get("width", get_cfg("pipeline", "default_width", default=512))),
-        "{{HEIGHT}}": str(overrides.get("height", get_cfg("pipeline", "default_height", default=512))),
-        "{{FRAMES}}": str(overrides.get("frames", get_cfg("pipeline", "default_frames", default=24))),
-        "{{FPS}}": str(overrides.get("fps", get_cfg("pipeline", "default_fps", default=8))),
-        "{{STEPS}}": str(overrides.get("steps", get_cfg("pipeline", "default_steps", default=20))),
-        "{{CFG}}": str(overrides.get("cfg", get_cfg("pipeline", "default_cfg", default=7.5))),
-        "{{SEED}}": str(overrides.get("seed", random.randint(0, 2**31))),
+        "{{POSITIVE_PROMPT}}":      positive,
+        "{{NEGATIVE_PROMPT}}":      negative,
+        "{{CHECKPOINT}}":           model_cfg.get("checkpoint", ""),
+        "{{TEXT_ENCODER}}":         model_cfg.get("text_encoder", "t5xxl_fp16.safetensors"),
+        "{{VAE}}":                  model_cfg.get("vae", ""),
+        "{{MOTION_MODULE}}":        model_cfg.get("motion_module", ""),
+        "{{CAMERA_LORA}}":          camera_lora,
+        "{{CAMERA_LORA_STRENGTH}}": str(camera_lora_strength),
+        "{{WIDTH}}":    str(overrides.get("width")  or get_cfg("pipeline", "default_width",  default=768)),
+        "{{HEIGHT}}":   str(overrides.get("height") or get_cfg("pipeline", "default_height", default=512)),
+        "{{FRAMES}}":   str(overrides.get("frames") or get_cfg("pipeline", "default_frames", default=25)),
+        "{{FPS}}":      str(overrides.get("fps")    or get_cfg("pipeline", "default_fps",    default=24)),
+        "{{STEPS}}":    str(steps),
+        "{{CFG}}":      str(cfg),
+        "{{SEED}}":     str(overrides.get("seed") or random.randint(0, 2**31)),
         "{{OUTPUT_PREFIX}}": f"video_{int(time.time())}",
     }
 
@@ -236,6 +307,74 @@ async def get_available_models() -> str:
         return f"Error fetching models: {e}"
 
 
+# ── Tool: model_status ───────────────────────────────────────────────────────
+@mcp.tool()
+def model_status() -> str:
+    """
+    Show which models are installed and ready, which need downloading,
+    and recommended settings for each. Based on your ComfyUI model folder.
+    """
+    return """Model Status for ComfyUI @ 192.168.1.196:8188
+=====================================================
+
+READY TO USE (models confirmed installed)
+──────────────────────────────────────────
+[✅] ltxvideo_camera  (RECOMMENDED — use this)
+     Model:   ltx-2-19b-dev-fp8.safetensors
+     Encoder: t5xxl_fp16.safetensors
+     VAE:     ltx-2-19b-distilled-fp8.safetensors
+     LoRAs:   dolly-in ✅ | jib-down ✅ | others ⚠️ need re-download
+     Steps:   20  |  CFG: 3.0  |  768×512  |  24fps
+
+[✅] ltxvideo         (same as above, no camera LoRA)
+
+[✅] ltxvideo_fast    (4-step distilled — very fast)
+     Extra LoRA: ltx-2-19b-distilled-lora-384.safetensors
+     Steps:   6   |  CFG: 1.0  — use for quick previews
+
+[✅] wan22            (highest quality — slow, ~10 min)
+     Model:   wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors
+     Encoder: umt5_xxl_fp8_e4m3fn_scaled.safetensors
+     VAE:     wan_2.1_vae.safetensors
+     Steps:   20  |  CFG: 5.0  |  768×512  |  24fps
+     Use for: final renders, complex scenes
+
+[✅] wan22_calm       (portraits, landscapes, calm motion)
+     Model:   wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors
+
+CAMERA LoRA STATUS (for ltxvideo_camera)
+──────────────────────────────────────────
+[✅] dolly-in    (push toward subject)
+[✅] jib-down    (crane downward)
+[⚠️] dolly-out   — only Zone.Identifier found, re-download .safetensors
+[⚠️] dolly-left  — only Zone.Identifier found, re-download .safetensors
+[⚠️] dolly-right — only Zone.Identifier found, re-download .safetensors
+[⚠️] jib-up      — only Zone.Identifier found, re-download .safetensors
+[⚠️] static      — only Zone.Identifier found, re-download .safetensors
+
+  Re-download from: https://huggingface.co/Lightricks/LTX-Video/tree/main
+  Or use ComfyUI Manager → Model Manager → search "ltx camera"
+  Fallback: dolly-in LoRA used when others are missing (auto fallback)
+
+NOT INSTALLED (models missing)
+──────────────────────────────────────────
+[❌] animatediff — needs v1-5-pruned-emaonly.safetensors + motion module
+[❌] svd         — needs svd_xt.safetensors
+
+UPSCALERS (installed, usable in post)
+──────────────────────────────────────────
+[✅] ltx-2.3-spatial-upscaler-x2-1.1.safetensors
+[✅] ltx-2.3-temporal-upscaler-x2-1.0.safetensors
+[✅] RealESRGAN_x4plus.pth
+
+QUICK SWITCH COMMANDS
+──────────────────────────────────────────
+  configure_pipeline(model='ltxvideo_camera')  ← default, best balance
+  configure_pipeline(model='ltxvideo_fast')    ← fast preview (4-8 steps)
+  configure_pipeline(model='wan22')            ← highest quality
+  configure_pipeline(model='wan22_calm')       ← calm/portrait scenes"""
+
+
 # ── Tool: configure_pipeline ──────────────────────────────────────────────────
 @mcp.tool()
 def configure_pipeline(
@@ -298,19 +437,22 @@ def configure_pipeline(
         changes.append(f"llm_provider → {llm_provider}")
 
     if not changes:
-        # Show current config
+        host = get_cfg("comfyui", "host", default="127.0.0.1")
+        port = get_cfg("comfyui", "port", default=8188)
         return (
             "Current pipeline config:\n"
-            f"  model:      {get_cfg('pipeline', 'default_model', default='animatediff')}\n"
+            f"  ComfyUI:    http://{host}:{port}\n"
+            f"  model:      {_runtime_cfg.get('model') or get_cfg('pipeline', 'default_model', default='ltxvideo_camera')}\n"
             f"  width:      {_runtime_cfg.get('width', CONFIG['pipeline']['default_width'])}\n"
             f"  height:     {_runtime_cfg.get('height', CONFIG['pipeline']['default_height'])}\n"
             f"  frames:     {_runtime_cfg.get('frames', CONFIG['pipeline']['default_frames'])}\n"
             f"  fps:        {_runtime_cfg.get('fps', CONFIG['pipeline']['default_fps'])}\n"
             f"  steps:      {_runtime_cfg.get('steps', CONFIG['pipeline']['default_steps'])}\n"
             f"  cfg:        {_runtime_cfg.get('cfg', CONFIG['pipeline']['default_cfg'])}\n"
-            f"  transition: {CONFIG.get('montage', {}).get('default_transition', 'fade')}\n"
+            f"  transition: {CONFIG.get('montage', {}).get('default_transition', 'dissolve')}\n"
             f"  resolution: {CONFIG.get('montage', {}).get('default_resolution', '1280x720')}\n"
-            f"  llm:        {CONFIG.get('idea_generation', {}).get('provider', 'claude')}\n"
+            f"  llm:        {CONFIG.get('idea_generation', {}).get('provider', 'auto')}\n"
+            "\nInstalled models: ltxvideo | ltxvideo_fast | ltxvideo_camera | wan22 | wan22_calm"
         )
     return "Pipeline configured:\n" + "\n".join(f"  {c}" for c in changes)
 

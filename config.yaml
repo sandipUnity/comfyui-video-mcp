@@ -1,60 +1,129 @@
 # ComfyUI Video MCP Pipeline Configuration
+# ComfyUI running on: http://192.168.1.196:8188
 
 comfyui:
-  host: "127.0.0.1"
+  host: "192.168.1.196"   # remote machine on LAN
   port: 8188
-  timeout: 300           # seconds to wait for generation
+  timeout: 600            # 10 min — large models (14B/22B) need more time
   output_dir: "output"
 
 pipeline:
-  default_model: "animatediff"   # animatediff | svd | cogvideox | wan21
-  default_frames: 24
-  default_fps: 8
-  default_width: 512
+  # ── Installed & ready to use ──────────────────────────────────────────────
+  # ltxvideo        LTX-Video 2 19B (recommended — fast, high quality)
+  # ltxvideo_fast   LTX-Video 19B + distilled LoRA (4-8 steps, very fast)
+  # ltxvideo_camera LTX-Video 19B + camera control LoRA (auto-selected per scene)
+  # wan22           Wan 2.2 T2V 14B (highest quality — slow, 600s timeout)
+  # ── Not installed (models missing) ───────────────────────────────────────
+  # animatediff     needs: v1-5-pruned-emaonly.safetensors + mm_sd_v15_v2.ckpt
+  # svd             needs: svd_xt.safetensors
+  default_model: "wan22_lightx2v"   # Wan2.2 + LightX2V 4-step LoRA (~108s/scene)
+  default_frames: 25                # LTX works best at 25 frames
+  default_fps: 24
+  default_width: 768
   default_height: 512
-  default_steps: 20
-  default_cfg: 7.5
+  default_steps: 20                 # ltxvideo dev: 20-30 | distilled: 4-8
+  default_cfg: 3.0                  # LTX works best at low CFG (2.5–4.0)
 
 models:
+  # ── LTX Video (your primary model) ───────────────────────────────────────
+  ltxvideo:
+    checkpoint: "ltx-2-19b-dev-fp8.safetensors"   # in models/checkpoints/
+    text_encoder: "t5xxl_fp16.safetensors"          # in models/text_encoders/
+    vae: "ltx-2-19b-distilled-fp8.safetensors"     # in models/vae/
+    workflow: "workflows/ltxvideo_api.json"
+
+  ltxvideo_fast:
+    checkpoint: "ltx-2-19b-dev-fp8.safetensors"
+    text_encoder: "t5xxl_fp16.safetensors"
+    vae: "ltx-2-19b-distilled-fp8.safetensors"
+    distilled_lora: "ltx-2-19b-distilled-lora-384.safetensors"
+    distilled_lora_strength: 1.0
+    workflow: "workflows/ltxvideo_api.json"
+    # override steps to 4-8 for distilled
+    steps_override: 6
+    cfg_override: 1.0
+
+  ltxvideo_camera:
+    checkpoint: "ltx-2-19b-dev-fp8.safetensors"
+    text_encoder: "t5xxl_fp16.safetensors"
+    vae: "ltx-2-19b-distilled-fp8.safetensors"
+    workflow: "workflows/ltxvideo_camera_api.json"
+    # Camera LoRAs (from your loras/ folder) — auto-selected by skill camera moves
+    camera_lora_strength: 1.0
+    camera_loras:
+      dolly_in:    "ltx-2-19b-lora-camera-control-dolly-in.safetensors"      # OK - installed
+      dolly_out:   "ltx-2-19b-lora-camera-control-dolly-out.safetensors"     # needs re-download
+      dolly_left:  "ltx-2-19b-lora-camera-control-dolly-left.safetensors"    # needs re-download
+      dolly_right: "ltx-2-19b-lora-camera-control-dolly-right.safetensors"   # needs re-download
+      jib_up:      "ltx-2-19b-lora-camera-control-jib-up.safetensors"        # needs re-download
+      jib_down:    "ltx-2-19b-lora-camera-control-jib-down.safetensors"      # OK - installed
+      static:      "ltx-2-19b-lora-camera-control-static.safetensors"        # needs re-download
+    camera_lora_fallback: "ltx-2-19b-lora-camera-control-dolly-in.safetensors"
+
+  # ── Wan 2.2 T2V 14B (highest quality) ────────────────────────────────────
+  wan22:
+    # high_noise variant: better for dynamic motion, action, complex scenes
+    # low_noise variant:  better for calm scenes, portraits, landscapes
+    checkpoint: "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors"  # in diffusion_models/
+    text_encoder: "umt5_xxl_fp8_e4m3fn_scaled.safetensors"           # in text_encoders/
+    vae: "wan_2.1_vae.safetensors"                                    # in vae/
+    workflow: "workflows/wan22_t2v_api.json"
+    steps_override: 20
+    cfg_override: 5.0
+
+  # ── Wan 2.2 + LightX2V 4-step LoRA (ACTIVE — fast, ~108s on RTX 4090D) ──────
+  wan22_lightx2v:
+    # Two-stage cascade: high_noise UNET handles steps 0→2, low_noise handles 2→4
+    unet_high:  "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors"   # diffusion_models/
+    unet_low:   "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"    # diffusion_models/
+    lora_high:  "wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors"  # loras/
+    lora_low:   "wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors"   # loras/
+    text_encoder: "umt5_xxl_fp8_e4m3fn_scaled.safetensors"           # text_encoders/
+    vae:        "wan_2.1_vae.safetensors"                             # vae/
+    workflow:   "workflows/wan22_lightx2v_api.json"
+    steps_override: 4      # LightX2V 4-step LoRA — do NOT change
+    cfg_override: 1.0      # LightX2V requires low CFG — do NOT change
+    shift: 5.0             # ModelSamplingSD3 shift
+    default_width: 640
+    default_height: 640
+    default_frames: 81     # 81 frames ÷ 16 fps ≈ 5 s
+    default_fps: 16
+
+  wan22_calm:
+    checkpoint: "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"
+    text_encoder: "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+    vae: "wan_2.1_vae.safetensors"
+    workflow: "workflows/wan22_t2v_api.json"
+    steps_override: 20
+    cfg_override: 5.0
+
+  # ── Not installed — left for reference ───────────────────────────────────
   animatediff:
-    checkpoint: "v1-5-pruned-emaonly.safetensors"
-    motion_module: "mm_sd_v15_v2.ckpt"
+    checkpoint: "v1-5-pruned-emaonly.safetensors"     # NOT installed
+    motion_module: "mm_sd_v15_v2.ckpt"                # NOT installed
     workflow: "workflows/animatediff_api.json"
   svd:
-    checkpoint: "svd_xt.safetensors"
+    checkpoint: "svd_xt.safetensors"                  # NOT installed
     workflow: "workflows/svd_api.json"
-  cogvideox:
-    checkpoint: "CogVideoX-5b"
-    workflow: "workflows/cogvideox_api.json"
-  wan21:
-    checkpoint: "Wan2.1-T2V-1.3B"
-    workflow: "workflows/wan21_api.json"
 
 montage:
-  default_transition: "fade"     # fade | dissolve | wipe | slide | none
-  transition_duration: 0.5       # seconds
+  default_transition: "dissolve"   # fade | dissolve | wipe | slide | zoom | none
+  transition_duration: 0.5
   default_resolution: "1280x720"
   default_fps: 24
-  default_music: ""              # path to background music file
+  default_music: ""
   music_volume: 0.3
 
 idea_generation:
-  # Provider options:
-  #   auto    → uses Claude if ANTHROPIC_API_KEY is set, else Ollama, else offline templates
-  #   claude  → Claude API (needs ANTHROPIC_API_KEY env var — best quality)
-  #   ollama  → local Ollama (no API key needed — install ollama.ai + pull a model)
-  #   offline → pure template-based (no LLM — zero dependencies, basic quality)
+  # auto → Claude if ANTHROPIC_API_KEY set, else Ollama, else offline templates
   provider: "auto"
   claude_model: "claude-opus-4-6"
-  ollama_model: "llama3.2"        # or llama3.1, mistral, qwen2.5, etc.
+  ollama_model: "llama3.2"
   ollama_host: "http://localhost:11434"
   ideas_per_request: 5
   scenes_per_idea: 4
 
-# Skill frameworks from higgsfield-seedance2-jineng (auto-detected from notes)
-# Available: cinematic, anime, 3d_cgi, cartoon, fight_scenes, motion_design,
-#            ecommerce, social_hook, music_video, brand_story, fashion, food, real_estate
 skills:
-  default_skill: "auto"           # auto-detect from notes, or set a specific skill id
-  inject_quality_boosters: true   # add skill's quality tags to every ComfyUI prompt
-  inject_style_tags: true         # add style identifier tags
+  default_skill: "auto"
+  inject_quality_boosters: true
+  inject_style_tags: true

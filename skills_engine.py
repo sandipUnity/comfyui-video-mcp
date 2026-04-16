@@ -42,7 +42,8 @@ SKILLS: dict[str, SkillSpec] = {
         name="Cinematic Film-Style",
         description="Live-action film with pro cinematography, precise lighting, dramatic camera work",
         keywords=["film", "cinematic", "movie", "dramatic", "live action", "realistic", "documentary",
-                  "noir", "thriller", "drama", "portrait", "landscape", "scene"],
+                  "noir", "thriller", "drama", "portrait", "landscape", "scene", "street photography",
+                  "urban night", "rain", "neon reflections"],
         quality_boosters=[
             "masterpiece", "best quality", "8k uhd", "film grain", "cinematic color grading",
             "anamorphic lens flare", "shallow depth of field", "RAW photo", "DSLR", "35mm film",
@@ -262,7 +263,8 @@ Always specify:
         name="Anime & Japanese Animation",
         description="Japanese animation aesthetic with cel shading, speed lines, and genre-specific visual language",
         keywords=["anime", "manga", "japanese", "shonen", "seinen", "magical girl", "mecha",
-                  "kawaii", "otaku", "sakura", "ninja", "samurai", "slice of life", "cyberpunk anime"],
+                  "kawaii", "otaku", "sakura", "ninja", "samurai", "slice of life", "cyberpunk anime",
+                  "cyberpunk", "neon city", "neon lights", "tokyo", "akihabara", "shibuya"],
         quality_boosters=[
             "anime style", "masterpiece", "best quality", "detailed anime art",
             "cel shading", "anime shading", "clean line art", "key visual quality",
@@ -582,8 +584,9 @@ Avoid: polish that feels fake, voiceover description, generic stock aesthetics."
         id="fashion",
         name="Fashion Lookbook",
         description="High-fashion editorial and lookbook video content with model direction and styling",
-        keywords=["fashion", "style", "clothing", "outfit", "model", "lookbook", "editorial",
-                  "luxury", "streetwear", "designer", "runway", "clothing brand", "wardrobe"],
+        keywords=["fashion", "clothing", "outfit", "model", "lookbook", "editorial",
+                  "luxury fashion", "streetwear", "designer", "runway", "clothing brand", "wardrobe",
+                  "fashion week", "haute couture", "apparel"],
         quality_boosters=[
             "fashion editorial quality", "Vogue aesthetic", "high fashion",
             "professional model", "editorial lighting", "magazine quality",

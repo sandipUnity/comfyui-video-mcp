@@ -1,0 +1,184 @@
+﻿Folder structure for: C:\ComfyUI-Easy-Install\ComfyUI\models
+|-- audio_encoders
+    |-- put_audio_encoder_models_here
+|-- checkpoints
+    |-- hunyuan_3d_v2.1.safetensors
+    |-- hunyuan_3d_v2.1.safetensorsZone.Identifier
+    |-- hunyuan3d-dit-v2_fp16.safetensors
+    |-- hunyuan3d-dit-v2_fp16.safetensorsZone.Identifier
+    |-- ltx-2.3-22b-dev-fp8.safetensors
+    |-- ltx-2-19b-dev-fp8.safetensors
+    |-- ltx-2-19b-dev-fp8.safetensorsZone.Identifier
+    |-- ltx-2-19b-distilled-fp8.safetensorsZone.Identifier
+    |-- ltx-video-2b-v0.9.5.safetensors
+    |-- ltx-video-2b-v0.9.5.safetensorsZone.Identifier
+    |-- put_checkpoints_here
+    |-- RealESRGAN_x4plus.pth
+|-- clip
+    |-- put_clip_or_text_encoder_models_here
+    |-- gemma-3-12b-it-qat-q4_0-unquantized
+        |-- .gitattributes
+        |-- added_tokens.json
+        |-- chat_template.json
+        |-- config.json
+        |-- generation_config.json
+        |-- model.safetensors.index.json
+        |-- model-00001-of-00005.safetensors
+        |-- model-00002-of-00005.safetensors
+        |-- model-00003-of-00005.safetensors
+        |-- model-00004-of-00005.safetensors
+        |-- model-00005-of-00005.safetensors
+        |-- preprocessor_config.json
+        |-- processor_config.json
+        |-- README.md
+        |-- special_tokens_map.json
+        |-- tokenizer.json
+        |-- tokenizer.model
+        |-- tokenizer_config.json
+        |-- .cache
+            |-- huggingface
+                |-- .gitignore
+                |-- download
+                    |-- .gitattributes.lock
+                    |-- .gitattributes.metadata
+                    |-- added_tokens.json.lock
+                    |-- added_tokens.json.metadata
+                    |-- chat_template.json.lock
+                    |-- chat_template.json.metadata
+                    |-- config.json.lock
+                    |-- config.json.metadata
+                    |-- generation_config.json.lock
+                    |-- generation_config.json.metadata
+                    |-- model.safetensors.index.json.lock
+                    |-- model.safetensors.index.json.metadata
+                    |-- model-00001-of-00005.safetensors.lock
+                    |-- model-00001-of-00005.safetensors.metadata
+                    |-- model-00002-of-00005.safetensors.lock
+                    |-- model-00002-of-00005.safetensors.metadata
+                    |-- model-00003-of-00005.safetensors.lock
+                    |-- model-00003-of-00005.safetensors.metadata
+                    |-- model-00004-of-00005.safetensors.lock
+                    |-- model-00004-of-00005.safetensors.metadata
+                    |-- model-00005-of-00005.safetensors.lock
+                    |-- model-00005-of-00005.safetensors.metadata
+                    |-- preprocessor_config.json.lock
+                    |-- preprocessor_config.json.metadata
+                    |-- processor_config.json.lock
+                    |-- processor_config.json.metadata
+                    |-- README.md.lock
+                    |-- README.md.metadata
+                    |-- special_tokens_map.json.lock
+                    |-- special_tokens_map.json.metadata
+                    |-- tokenizer.json.lock
+                    |-- tokenizer.json.metadata
+                    |-- tokenizer.model.lock
+                    |-- tokenizer.model.metadata
+                    |-- tokenizer_config.json.lock
+                    |-- tokenizer_config.json.metadata
+|-- clip_vision
+    |-- put_clip_vision_models_here
+|-- configs
+    |-- anything_v3.yaml
+    |-- v1-inference.yaml
+    |-- v1-inference_clip_skip_2.yaml
+    |-- v1-inference_clip_skip_2_fp16.yaml
+    |-- v1-inference_fp16.yaml
+    |-- v1-inpainting-inference.yaml
+    |-- v2-inference.yaml
+    |-- v2-inference_fp32.yaml
+    |-- v2-inference-v.yaml
+    |-- v2-inference-v_fp32.yaml
+    |-- v2-inpainting-inference.yaml
+|-- controlnet
+    |-- put_controlnets_and_t2i_here
+|-- diffusers
+    |-- put_diffusers_models_here
+|-- diffusion_models
+    |-- model.fp16 (1).ckpt
+    |-- put_diffusion_model_files_here
+    |-- wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+    |-- wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+    |-- wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors
+    |-- wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors
+|-- embeddings
+    |-- put_embeddings_or_textual_inversion_concepts_here
+|-- fishaudioS2
+|-- gligen
+    |-- put_gligen_models_here
+|-- hypernetworks
+    |-- put_hypernetworks_here
+|-- latent_upscale_models
+    |-- ltx-2.3-spatial-upscaler-x2-1.1.safetensors
+    |-- ltx-2-spatial-upscaler-x2-1.0.safetensors
+    |-- put_latent_upscale_models_here
+|-- LLM
+|-- loras
+    |-- gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors
+    |-- ltx-2.3-22b-distilled-lora-384.safetensors
+    |-- ltx-2-19b-distilled-lora-384.safetensors
+    |-- ltx-2-19b-distilled-lora-384.safetensorsZone.Identifier
+    |-- ltx-2-19b-ic-lora-canny-control.safetensors
+    |-- ltx-2-19b-ic-lora-canny-control.safetensorsZone.Identifier
+    |-- ltx-2-19b-ic-lora-depth-control.safetensorsZone.Identifier
+    |-- ltx-2-19b-ic-lora-detailer.safetensors
+    |-- ltx-2-19b-ic-lora-detailer.safetensorsZone.Identifier
+    |-- ltx-2-19b-ic-lora-pose-control.safetensorsZone.Identifier
+    |-- ltx-2-19b-lora-camera-control-dolly-in.safetensors
+    |-- ltx-2-19b-lora-camera-control-dolly-in.safetensorsZone.Identifier
+    |-- ltx-2-19b-lora-camera-control-dolly-left.safetensorsZone.Identifier
+    |-- ltx-2-19b-lora-camera-control-dolly-out.safetensorsZone.Identifier
+    |-- ltx-2-19b-lora-camera-control-dolly-right.safetensorsZone.Identifier
+    |-- ltx-2-19b-lora-camera-control-jib-down.safetensors
+    |-- ltx-2-19b-lora-camera-control-jib-down.safetensorsZone.Identifier
+    |-- ltx-2-19b-lora-camera-control-jib-up.safetensorsZone.Identifier
+    |-- ltx-2-19b-lora-camera-control-static.safetensorsZone.Identifier
+    |-- put_loras_here
+    |-- wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors
+    |-- wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
+    |-- wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors
+    |-- wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensorsZone.Identifier
+    |-- wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors
+    |-- wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensorsZone.Identifier
+|-- model_patches
+    |-- put_model_patches_here
+|-- photomaker
+    |-- put_photomaker_models_here
+|-- qwen-tts
+    |-- voices
+|-- rembg
+|-- sam3
+|-- sams
+    |-- sam_vit_b_01ec64.pth
+|-- style_models
+    |-- put_t2i_style_model_here
+|-- text_encoders
+    |-- gemma_3_12B_it_fp4_mixed.safetensors
+    |-- gemma_3_12B_it_fp4_mixed.safetensorsZone.Identifier
+    |-- put_text_encoder_files_here
+    |-- t5xxl_fp16.safetensors
+    |-- t5xxl_fp16.safetensorsZone.Identifier
+    |-- umt5_xxl_fp8_e4m3fn_scaled.safetensors
+    |-- umt5_xxl_fp8_e4m3fn_scaled.safetensorsZone.Identifier
+|-- ultralytics
+|-- unet
+    |-- put_unet_files_here
+|-- upscale_models
+    |-- ltx-2.3-22b-distilled-lora-384.safetensors
+    |-- ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors
+    |-- ltx-2.3-spatial-upscaler-x2-1.0.safetensors
+    |-- ltx-2.3-spatial-upscaler-x2-1.1.safetensors
+    |-- ltx-2.3-temporal-upscaler-x2-1.0.safetensors
+    |-- ltx-2-temporal-upscaler-x2-1.0.safetensors
+    |-- ltx-2-temporal-upscaler-x2-1.0.safetensorsZone.Identifier
+    |-- put_esrgan_and_other_upscale_models_here
+|-- vae
+    |-- ltx-2-19b-distilled-fp8.safetensors
+    |-- ltx-2-19b-distilled-fp8.safetensorsZone.Identifier
+    |-- model.fp16.ckpt
+    |-- model.fp16.ckptZone.Identifier
+    |-- put_vae_here
+    |-- wan_2.1_vae.safetensors
+    |-- wan_2.1_vae.safetensorsZone.Identifier
+|-- vae_approx
+    |-- put_taesd_encoder_pth_and_taesd_decoder_pth_here
+|-- yolo
