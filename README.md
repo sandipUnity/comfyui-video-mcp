@@ -1,529 +1,451 @@
-# ComfyUI Video MCP — Skill-Powered Automated Video Pipeline
+# ComfyUI Video MCP
 
-A **Model Context Protocol (MCP) server** that turns raw notes into fully generated videos through ComfyUI, powered by 15 cinematic skill frameworks adapted from [higgsfield-seedance2-jineng](https://github.com/beshuaxian/higgsfield-seedance2-jineng).
+## Purpose
 
----
-
-## What This Does
-
-Write a sentence. Get a cinema-quality video.
-
-```
-"rainy tokyo street, cyberpunk neon, midnight chase"
-        ↓  skill auto-detection → anime
-        ↓  Claude / Ollama generates 5 cinematic ideas
-        ↓  pick one → 4 scenes with Kelvin-precise prompts
-        ↓  ComfyUI generates each scene
-        ↓  FFmpeg compiles montage with xfade transitions
-        ↓  final MP4 ready
-```
-
-No API key required. Works fully offline with Ollama or template mode.
+ComfyUI Video MCP is a Model Context Protocol (MCP) server that turns a single sentence of raw notes into a finished multi-scene video with minimal effort. You describe a vibe ("tokyo cyberpunk street, neon rain, anime style"), and the pipeline auto-detects the most appropriate cinematic skill framework, uses an LLM to generate five creative video concepts, lets you pick one, expands it into four scenes with cinematically-precise prompts (locking a protagonist anchor and following a HOOK → BUILD → CLIMAX → RESOLUTION narrative arc), queues each scene to a remote ComfyUI instance for actual video generation, and finally compiles all scenes into a montage with transitions and optional music overlay. The goal is an automated OpenMontage pipeline: raw idea in, finished MP4 out.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Claude Code (MCP Client)                    │
-│                  (you talk here — natural language)             │
-└────────────────────────┬────────────────────────────────────────┘
-                         │  MCP protocol (stdio)
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    server.py  (FastMCP)                         │
-│                                                                 │
-│  15 MCP Tools:                                                  │
-│  list_skills · detect_skill_for_notes · generate_ideas          │
-│  list_ideas · select_idea · regenerate_ideas                    │
-│  generate_video · check_status · list_videos                    │
-│  compile_montage · list_montages · session_status               │
-│  ping_comfyui · get_available_models · configure_pipeline       │
-└──────┬───────────────────┬────────────────────┬─────────────────┘
-       │                   │                    │
-       ▼                   ▼                    ▼
-┌─────────────┐   ┌─────────────────┐   ┌──────────────────┐
-│skills_engine│   │  idea_generator │   │ comfyui_client   │
-│             │   │                 │   │                  │
-│ 15 Skills:  │──▶│ LLM Providers:  │   │ REST API:        │
-│ • cinematic │   │ • Claude API    │   │ /prompt          │
-│ • anime     │   │ • Ollama local  │   │ /history         │
-│ • 3d_cgi    │   │ • offline tpl   │   │ /queue           │
-│ • cartoon   │   │                 │   │ /view            │
-│ • fight     │   │ Skill-enhanced  │   │                  │
-│ • food      │   │ system prompts  │   │ WebSocket:       │
-│ • fashion   │   │ injected into   │   │ /ws (progress)   │
-│ • ...+9more │   │ every LLM call  │   │                  │
-└──────┬──────┘   └────────┬────────┘   └────────┬─────────┘
-       │                   │                     │
-       │  auto-detects     │  generates          │  queues workflow
-       │  from notes       │  cinema-quality     │  JSON, polls
-       │  keywords         │  prompts            │  completion
-       │                   │                     │
-       └───────────────────▼─────────────────────▼
-                    ┌──────────────────┐
-                    │   session.py     │
-                    │  (in-memory)     │
-                    │                  │
-                    │ ideas[]          │
-                    │ scenes[]         │
-                    │ generation_jobs{}│
-                    │ montage_jobs[]   │
-                    └──────────────────┘
-                           │
-                           ▼
-              ┌────────────────────────┐
-              │  ComfyUI  :8188        │
-              │                        │
-              │  Models:               │
-              │  • AnimateDiff         │
-              │  • Stable Video Diff.  │
-              │  • Wan2.1              │
-              │  • CogVideoX           │
-              └────────────┬───────────┘
-                           │  output MP4/GIF
-                           ▼
-              ┌────────────────────────┐
-              │  montage_compiler.py   │
-              │  (FFmpeg)              │
-              │                        │
-              │  • xfade transitions   │
-              │  • music overlay       │
-              │  • title cards         │
-              │  • resolution scale    │
-              └────────────┬───────────┘
-                           │
-                           ▼
-              output/montages/final.mp4
+User notes (one sentence)
+        │
+        ▼
+┌───────────────────┐
+│   skills_engine   │  detect_skill() — matches 15 cinematic frameworks
+│   (skills_engine  │  build_comfyui_positive/negative() — injects domain vocab
+│    .py)           │  get_workflow_overrides() — sets model/resolution/fps
+└────────┬──────────┘
+         │  SkillSpec (camera moves, lighting K, quality tags, hook patterns)
+         ▼
+┌───────────────────┐
+│  idea_generator   │  IdeaGenerator — calls Claude / Ollama / offline templates
+│  (idea_generator  │  Generates 5 ideas → user picks one
+│   .py)            │  Expands to 4 scenes with scene continuity enforcement
+└────────┬──────────┘
+         │  4 scene prompts (positive + negative, skill-injected)
+         ▼
+┌───────────────────┐
+│  comfyui_client   │  queue_prompt() → ComfyUI REST API at 192.168.1.196:8188
+│  (comfyui_client  │  get_queue_status(), get_history()
+│   .py)            │  Workflow: wan22_lightx2v_api.json
+└────────┬──────────┘
+         │  completed video files (output/)
+         ▼
+┌───────────────────┐
+│ montage_compiler  │  FFmpeg xfade transitions, music overlay
+│ (montage_compiler │  → final MP4
+│  .py)             │
+└───────────────────┘
+         │
+         ▼
+    Finished montage
 ```
+
+Session state (ideas, scenes, generation jobs, montage jobs) is held in memory by `session.py`. All 15 MCP tools are exposed through `server.py` via FastMCP.
 
 ---
 
-## Component Map
+## Models
 
-| File | Role | Key Responsibility |
-|------|------|--------------------|
-| [`server.py`](server.py) | MCP server | 15 tools exposed to Claude Code |
-| [`skills_engine.py`](skills_engine.py) | Skill library | 15 cinematic frameworks, auto-detect, prompt builder |
-| [`idea_generator.py`](idea_generator.py) | LLM bridge | Calls Claude/Ollama with skill-injected system prompts |
-| [`comfyui_client.py`](comfyui_client.py) | ComfyUI API | Queue, poll, download via REST + WebSocket |
-| [`montage_compiler.py`](montage_compiler.py) | FFmpeg wrapper | xfade transitions, music, title cards |
-| [`session.py`](session.py) | State manager | Ideas, scenes, jobs — in-memory per session |
-| [`config.yaml`](config.yaml) | Configuration | All defaults — LLM provider, resolutions, models |
-| [`workflows/`](workflows/) | ComfyUI JSON | AnimateDiff, SVD, Wan2.1 workflow templates |
+### Active Model: Wan2.2 + LightX2V (recommended)
 
----
+| Property | Value |
+|---|---|
+| Config key | `wan22_lightx2v` |
+| Architecture | Two-stage cascade (high_noise + low_noise UNET) |
+| Workflow file | `workflows/wan22_lightx2v_api.json` |
+| Steps | 4 (LightX2V 4-step LoRA — do not change) |
+| CFG | 1.0 (LightX2V requirement — do not change) |
+| Shift | 5.0 (ModelSamplingSD3) |
+| Resolution | 640 × 640 |
+| Frames | 81 (≈ 5 seconds at 16 fps) |
+| FPS | 16 |
+| Time per scene | ~108 seconds on RTX 4090D |
+| ComfyUI host | 192.168.1.196:8188 |
 
-## Skill Framework Integration
+**Workflow internals:** Two `UNETLoader` nodes load the high-noise and low-noise checkpoints, each receives its matching LoRA, each is wrapped in `ModelSamplingSD3(shift=5.0)`, and both feed into two `KSamplerAdvanced` nodes chained at steps 0→2 and 2→4. Output goes through `VAEDecode → CreateVideo → SaveVideo`.
 
-The 15 skills from `higgsfield-seedance2-jineng` are embedded in `skills_engine.py`. Each skill carries:
+**Workflow placeholders** (substituted at queue time):
+`{{POSITIVE_PROMPT}}`, `{{NEGATIVE_PROMPT}}`, `{{WIDTH}}`, `{{HEIGHT}}`, `{{FRAMES}}`, `{{FPS}}`, `{{SEED}}`, `{{OUTPUT_PREFIX}}`
 
-```python
-SkillSpec(
-    id         = "anime",
-    keywords   = ["anime", "manga", "shonen", ...],   # auto-detection
-    quality_boosters = ["masterpiece", "cel shading", "anime style", ...],
-    negative_tags    = ["western cartoon", "3d render", "realistic", ...],
-    camera_vocabulary = [
-        "dramatic pull-back from extreme close-up to full scene reveal",
-        "impact frame freeze: held 0.3s with speed lines radiating outward",
-        ...
-    ],
-    lighting_vocabulary = [
-        "shonen style: 150% saturated warm amber sunlight from 45° above",
-        "cyberpunk anime: dark base with neon cyan 16000K and magenta 7000K",
-        ...
-    ],
-    hook_patterns = [
-        "speed lines converging to center then exploding outward",
-        ...
-    ],
-    technical_specs = {"fps": 24, "width": 768, "height": 432, "steps": 22, "cfg": 8.0},
-    prompt_template = "You are an anime director..."   # LLM system prompt
-)
-```
+#### Model files (on remote machine at 192.168.1.196)
 
-When `generate_ideas()` is called, the skill's `prompt_template` becomes the LLM system prompt, forcing cinema-precise language. Every scene prompt is then post-processed to inject missing `quality_boosters` before being sent to ComfyUI.
+| Role | Path |
+|---|---|
+| High-noise UNET | `diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors` |
+| Low-noise UNET | `diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors` |
+| High-noise LoRA | `loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors` |
+| Low-noise LoRA | `loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors` |
+| Text encoder | `text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors` |
+| VAE | `vae/wan_2.1_vae.safetensors` |
 
-### Auto-Detection Logic
+### Other Available Models
 
-```
-notes = "tokyo street rain cyberpunk neon midnight"
-         ↓
-keywords matched:
-  anime        → ["anime", "cyberpunk anime"] = 1
-  cinematic    → ["cinematic", "realistic"]   = 0
-  fight_scenes → ["fight", "combat"]          = 0
-         ↓
-highest score wins → anime selected
-         ↓
-ComfyUI overrides applied: 768×432, 24fps, CFG 8.0
-```
+| Config key | Description | Status |
+|---|---|---|
+| `wan22_lightx2v` | Wan2.2 14B + LightX2V 4-step LoRA | **Active (default)** |
+| `wan22` | Wan2.2 T2V 14B high-noise only | Installed, ~600s/scene |
+| `wan22_calm` | Wan2.2 T2V 14B low-noise only | Installed |
+| `ltxvideo` | LTX-Video 2 19B | Installed |
+| `ltxvideo_fast` | LTX-Video 19B + distilled LoRA | Installed |
+| `ltxvideo_camera` | LTX-Video 19B + camera control LoRA | Installed (partial LoRAs) |
+| `animatediff` | SD1.5 + AnimateDiff | Not installed |
+| `svd` | Stable Video Diffusion XT | Not installed |
 
 ---
 
-## Prompt Quality: Before vs After Skills
+## Quick Start
 
-### Without skills (plain LLM prompt):
-```
-masterpiece, best quality, tokyo street at night, neon lights,
-rain, cyberpunk style
-```
-
-### With Anime skill injected:
-```
-Two figures clash on rain-soaked neon-lit street, speed lines
-radiating from impact point, smear frame at 270° spinning heel
-kick moment, shonen style: 150% saturated warm amber sunlight
-from 45° above mixed with neon cyan 16000K left and magenta 7000K
-right, extreme close-up impact frame held 0.3s, rain droplets
-frozen mid-air in slow-motion 0.25x, torn jacket edges indicating
-damage level, masterpiece, best quality, detailed anime art,
-cel shading, anime shading, clean line art, key visual quality,
-official art style, vibrant colors, expressive eyes, anime style,
-manga style, Japanese animation
-```
-
-That second prompt is what actually goes into ComfyUI.
-
----
-
-## Setup
-
-### Prerequisites
-
-| Tool | Purpose | Required |
-|------|---------|----------|
-| Python 3.11+ | Run MCP server | Yes |
-| ComfyUI | Video generation | Yes |
-| FFmpeg | Montage compilation | Yes (for montage) |
-| Ollama | Local LLM (no API key) | Optional |
-| ANTHROPIC_API_KEY | Claude API (best quality) | Optional |
-
-### Install
-
-```bat
+```bash
+# 1. Clone and enter the project
 cd comfyui-video-mcp
-setup.bat
+
+# 2. Activate the virtual environment
+./venv/Scripts/python.exe -m pip install -r requirements.txt   # first time only
+
+# 3. (Optional) Set your Anthropic API key for best idea quality
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# 4. Register the MCP server with Claude Code
+claude mcp add comfyui-video -- C:/path/to/comfyui-video-mcp/venv/Scripts/python.exe C:/path/to/comfyui-video-mcp/server.py
+
+# 5. Verify connectivity
+# In Claude Code: ping_comfyui()
 ```
 
-This creates a venv and installs all Python dependencies.
-
-### Choose Your LLM Provider
-
-Edit `config.yaml`:
-
-```yaml
-idea_generation:
-  provider: "auto"   # auto → claude if key exists, else ollama, else offline
-```
-
-**Option A — Local Ollama (no API key):**
-```bat
-# Install from https://ollama.ai
-ollama pull llama3.2
-# Set provider: "ollama" in config.yaml
-```
-
-**Option B — Claude API (best prompt quality):**
-```bat
-# Copy .env.example to .env
-copy .env.example .env
-# Edit .env:  ANTHROPIC_API_KEY=sk-ant-...
-# Set provider: "claude" in config.yaml
-```
-
-**Option C — Offline (no LLM):**
-```yaml
-# config.yaml
-idea_generation:
-  provider: "offline"
-```
-
-### Install ComfyUI Nodes
-
-```bat
-install_comfyui_nodes.bat
-```
-
-Installs:
-- `ComfyUI-AnimateDiff-Evolved` — text-to-video animation
-- `ComfyUI-VideoHelperSuite` — `VHS_VideoCombine` output node
-- `ComfyUI-WanVideoWrapper` — Wan2.1 model support
-
-### Download Models
-
-Place in your ComfyUI `models/` folder:
-
-```
-ComfyUI/models/checkpoints/
-  v1-5-pruned-emaonly.safetensors    ← SD 1.5 (AnimateDiff base)
-
-ComfyUI/models/animatediff_models/
-  mm_sd_v15_v2.ckpt                  ← AnimateDiff motion module
-                                       (from HuggingFace: guoyww/animatediff)
-
-ComfyUI/models/diffusion_models/
-  Wan2.1-T2V-1.3B/                   ← Wan2.1 (optional, better quality)
-                                       (from HuggingFace: Wan-AI/Wan2.1-T2V-1.3B)
-```
-
-### Register with Claude Code
-
-```bat
-claude mcp add comfyui-video -- python "C:\Users\Sandip\Documents\Claude\comfyui-video-mcp\server.py"
-```
-
-Verify:
-```bat
-claude mcp list
-```
+No API key is required. The system falls back automatically:
+- `ANTHROPIC_API_KEY` set → Claude API (best quality)
+- Key not set, Ollama running → Ollama with llama3.2
+- Neither available → offline template mode
 
 ---
 
-## Full Workflow Walkthrough
+## Full Pipeline Walkthrough
 
-### Example: Cyberpunk Short Film
-
-```
-You: generate_ideas("rain-soaked tokyo alley, samurai vs drone, neon reflections")
-```
-
-**Server detects:** `anime` skill (keywords: cyberpunk anime, neon)  
-**LLM called with:** Anime director system prompt (impact frames, speed lines, genre-specific lighting)
+The complete flow from idea to finished montage:
 
 ```
-Skill detected: Anime & Japanese Animation [anime]
-Provider: ollama
+1. generate_ideas("tokyo cyberpunk anime virtual reality")
+   → auto-detects: anime skill
+   → calls LLM with skill-injected system prompt
+   → returns 5 video concepts, e.g.:
+      1. Neon Ghost Protocol
+      2. Akihabara Overflow
+      3. Ghost Signal Uprising
+      4. Synthetic Cherry Blossom
+      5. Digital Dreamscape
 
-Generated 5 ideas:
+2. select_idea(5)
+   → selects "Digital Dreamscape"
+   → expands to 4 scenes with continuity:
+      Scene 1 (HOOK)       — protagonist introduced in neon rain alley
+      Scene 2 (BUILD)      — protagonist enters virtual data-scape
+      Scene 3 (CLIMAX)     — reality collapses, VR bleeds through
+      Scene 4 (RESOLUTION) — protagonist stands in merged world
+   → PROTAGONIST anchor locked across all scenes
+   → post-processing enforcement re-injects protagonist if LLM drifted
 
-[1] Blade and Circuit: Steel Meets Silicon
-     A lone samurai faces a swarm of government drones in a flooded neon alley.
-     Shonen-style explosive combat with cyan/magenta lighting and speed-line impacts.
-     Style: Japanese animation | Mood: intense
-     Tags: shonen, cyberpunk, combat, neon, rain
+3. generate_video()
+   → reads wan22_lightx2v_api.json
+   → substitutes {{POSITIVE_PROMPT}}, {{NEGATIVE_PROMPT}}, {{SEED}}, etc.
+   → queues 4 prompts to ComfyUI at 192.168.1.196:8188
+   → returns job IDs
 
-[2] Ghost Protocol: Last Stand
-     ...
+4. check_status(wait=True)
+   → polls ComfyUI /history and /queue endpoints
+   → downloads completed .mp4 files to output/
+   → ~108s per scene, ~7-8 minutes total
 
-[3] Circuit Breaker
-     ...
+5. compile_montage(title="Digital Dreamscape", transition="dissolve")
+   → FFmpeg xfade dissolve between scenes
+   → optional music overlay (music_volume: 0.3)
+   → outputs output/Digital_Dreamscape_montage.mp4
 ```
 
-```
-You: select_idea(1)
+### Standalone Script (no MCP)
+
+```bash
+# Queue 4 scenes directly, bypassing the MCP server
+./venv/Scripts/python.exe run_generate.py "tokyo cyberpunk anime virtual reality"
 ```
 
-**Server generates 4 scenes** using Anime skill's cinema vocabulary:
-
-```
-Selected: [1] Blade and Circuit: Steel Meets Silicon
-Skill: Anime & Japanese Animation [anime]
-ComfyUI: 768×432 @ 24fps, 22 steps, CFG 8.0
-
-Scene 1: Opening — drone swarm descends through neon rain
-  Prompt: Rain-soaked neon alley, speed lines converging from edges as drone
-          swarm descends through cyan 16000K light shafts, samurai silhouette
-          at bottom of frame, impact frame opening held 0.3s with radiating speed
-          lines, shonen style: 150% saturated, masterpiece, cel shading...
-  Negative: western cartoon, 3d render, realistic, photographic...
-  Duration: 3.0s  |  Hook: speed lines exploding outward
-
-Scene 2: Confrontation — samurai draws blade
-  ...
-
-Scene 3: Combat exchange — blade deflects laser bolt
-  ...
-
-Scene 4: Resolution — drone falls, samurai sheathes blade in rain
-  ...
-```
-
-```
-You: generate_video()
-```
-
-```
-Queued 4 generation job(s):
-  Scene 1: queued (job: a3f2b1c0)
-  Scene 2: queued (job: d4e5f6a7)
-  Scene 3: queued (job: b8c9d0e1)
-  Scene 4: queued (job: f2a3b4c5)
-```
-
-```
-You: check_status(wait=True)
-```
-
-```
-ComfyUI Queue Status:
-Running: 1 | Pending: 3
-...
-Complete! Downloaded 4 file(s):
-  output/videos/scene_a3f2b1c0_video.mp4
-  output/videos/scene_d4e5f6a7_video.mp4
-  ...
-```
-
-```
-You: compile_montage(title="Blade and Circuit", transition="dissolve")
-```
-
-```
-Montage compiled successfully!
-
-Title:      Blade and Circuit
-Clips:      4
-Output:     output/montages/Blade_and_Circuit_1713276543.mp4
-Size:       18.4 MB
-Transition: dissolve
-```
+`run_generate.py` uses `detect_skill()` + `build_comfyui_positive/negative()` directly and queues to ComfyUI without starting the MCP server.
 
 ---
 
-## All MCP Tools Reference
+## MCP Tools Reference
 
-| Tool | Parameters | What It Does |
-|------|-----------|--------------|
-| `list_skills()` | — | Show all 15 skill frameworks |
-| `detect_skill_for_notes(notes)` | `notes` | Preview skill auto-detection |
-| `generate_ideas(notes, count, skill_id)` | notes required | Generate cinematic ideas |
-| `list_ideas()` | — | Show current session ideas |
-| `regenerate_ideas(feedback, count, skill_id)` | feedback required | Regen with changes |
-| `select_idea(idea_id)` | `idea_id` | Pick idea → generate scenes |
-| `configure_pipeline(model, width, height, ...)` | all optional | Adjust settings |
-| `generate_video(scene_id, all_scenes, model, ...)` | all optional | Queue in ComfyUI |
-| `check_status(job_id, wait)` | all optional | Monitor + download |
-| `list_videos()` | — | Browse generated clips |
-| `compile_montage(title, transition, ...)` | title optional | Build final MP4 |
-| `list_montages()` | — | Browse finished montages |
-| `ping_comfyui()` | — | Check ComfyUI connection |
-| `get_available_models()` | — | List loaded ComfyUI models |
-| `session_status()` | — | Full pipeline state |
+All 15 tools are exposed through `server.py` via FastMCP and available in Claude Code after registration.
+
+| Tool | Description |
+|---|---|
+| `list_skills` | List all 15 cinematic skill frameworks with their detection keywords |
+| `detect_skill_for_notes` | Auto-detect which skill best matches a set of user notes |
+| `generate_ideas` | Generate 5 video ideas from notes using the detected skill + LLM |
+| `list_ideas` | Show the current session's generated ideas |
+| `select_idea` | Pick one idea by number; expands it into 4 scene prompts |
+| `regenerate_ideas` | Discard current ideas and generate a fresh set |
+| `configure_pipeline` | Override model, resolution, frames, fps, or CFG for this session |
+| `generate_video` | Queue all 4 scenes to ComfyUI; returns job IDs |
+| `check_status` | Poll generation status; `wait=True` blocks until all scenes complete |
+| `list_videos` | List completed video files in the output directory |
+| `compile_montage` | Run FFmpeg montage compilation with transitions and optional music |
+| `list_montages` | List completed montage files |
+| `ping_comfyui` | Health-check the ComfyUI endpoint (useful for verifying connectivity) |
+| `get_available_models` | List models configured in config.yaml and their install status |
+| `session_status` | Dump current in-memory session state (ideas, jobs, files) |
+
+---
+
+## Skills Framework
+
+`skills_engine.py` defines 15 `SkillSpec` dataclasses. Each skill encodes domain-specific production knowledge that is injected directly into every ComfyUI prompt.
+
+### What each SkillSpec contains
+
+| Field | Example (anime skill) |
+|---|---|
+| Camera moves | `"slow tracking shot at 2ft/s"`, `"handheld push-in"` |
+| Lighting | `"neon underlighting 4200K"`, `"rim light 6500K"` |
+| Quality tags | `"anime cel shading"`, `"sakuga animation quality"` |
+| Negative tags | `"western cartoon"`, `"pixar style"`, `"3d render"` |
+| Hook patterns | `"city wide establishing shot → tight face reveal"` |
+| Generation params | width, height, frames, fps, steps, cfg overrides |
+
+### The 15 Skills
+
+| Skill key | Auto-detection keywords |
+|---|---|
+| `cinematic` | film, movie, cinematic, dramatic, epic, shot |
+| `anime` | anime, manga, japanese, shonen, seinen, cyberpunk, neon city, neon lights, tokyo, akihabara, shibuya |
+| `3d_cgi` | 3d, cgi, render, blender, octane, unreal, photorealistic |
+| `cartoon` | cartoon, animated, pixar, disney, toon |
+| `fight_scenes` | fight, action, battle, martial arts, combat, kickboxing |
+| `motion_design` | motion, graphics, kinetic, typography, logo, brand |
+| `ecommerce` | product, ecommerce, shop, buy, retail, showcase |
+| `social_hook` | viral, hook, tiktok, reel, short, social |
+| `music_video` | music, song, beat, rhythm, concert, festival |
+| `brand_story` | brand, story, narrative, company, founder, origin |
+| `fashion` | fashion, model, runway, lookbook, style, outfit |
+| `food` | food, recipe, restaurant, chef, cooking, beverage |
+| `real_estate` | real estate, property, house, interior, architecture |
+| *(+ 2 more)* | — |
+
+### Scene Continuity System
+
+When an idea is expanded into 4 scenes:
+
+1. A **PROTAGONIST anchor** is extracted and locked (name, appearance, costume, distinguishing features).
+2. Scenes follow the narrative arc: **HOOK → BUILD → CLIMAX → RESOLUTION**.
+3. After LLM generation, a **post-processing enforcement pass** checks every scene prompt for the protagonist anchor and re-injects it if the LLM drifted.
+
+This keeps characters visually consistent across all four generated clips.
 
 ---
 
 ## Configuration Reference
 
-`config.yaml` — all settings with defaults:
+Full path: `config.yaml`
+
+### ComfyUI connection
 
 ```yaml
 comfyui:
-  host: "127.0.0.1"
+  host: "192.168.1.196"   # remote machine on LAN
   port: 8188
-  timeout: 300          # seconds before generation times out
+  timeout: 600            # seconds — large 14B models need this
+  output_dir: "output"
+```
 
+### Pipeline defaults
+
+```yaml
 pipeline:
-  default_model: "animatediff"   # animatediff | svd | wan21
-  default_frames: 24
-  default_fps: 8
-  default_width: 512
+  default_model: "wan22_lightx2v"   # Wan2.2 + LightX2V 4-step LoRA
+  default_frames: 25                # used by LTX models
+  default_fps: 24
+  default_width: 768
   default_height: 512
+  default_steps: 20
+  default_cfg: 3.0
+```
 
-idea_generation:
-  provider: "auto"      # auto | claude | ollama | offline
-  claude_model: "claude-opus-4-6"
-  ollama_model: "llama3.2"
-  ideas_per_request: 5
-  scenes_per_idea: 4
+Note: `wan22_lightx2v` overrides these with its own values (640x640, 81 frames, 16fps, 4 steps, CFG 1.0).
 
-skills:
-  default_skill: "auto" # auto-detect or force a skill id
-  inject_quality_boosters: true
-  inject_style_tags: true
+### Active model (wan22_lightx2v)
 
+```yaml
+models:
+  wan22_lightx2v:
+    unet_high:  "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors"
+    unet_low:   "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"
+    lora_high:  "wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors"
+    lora_low:   "wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors"
+    text_encoder: "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+    vae:        "wan_2.1_vae.safetensors"
+    workflow:   "workflows/wan22_lightx2v_api.json"
+    steps_override: 4       # do NOT change
+    cfg_override: 1.0       # do NOT change
+    shift: 5.0
+    default_width: 640
+    default_height: 640
+    default_frames: 81      # 81 / 16fps = ~5 seconds
+    default_fps: 16
+```
+
+### Montage
+
+```yaml
 montage:
-  default_transition: "fade"    # fade | dissolve | wipe | slide | zoom | none
+  default_transition: "dissolve"   # fade | dissolve | wipe | slide | zoom | none
   transition_duration: 0.5
   default_resolution: "1280x720"
   default_fps: 24
+  default_music: ""
   music_volume: 0.3
 ```
 
+### Idea generation
+
+```yaml
+idea_generation:
+  provider: "auto"              # claude → ollama → offline
+  claude_model: "claude-opus-4-6"
+  ollama_model: "llama3.2"
+  ollama_host: "http://localhost:11434"
+  ideas_per_request: 5
+  scenes_per_idea: 4
+```
+
+### Skills injection
+
+```yaml
+skills:
+  default_skill: "auto"
+  inject_quality_boosters: true
+  inject_style_tags: true
+```
+
 ---
 
-## Output Structure
+## Setup Instructions
+
+### Prerequisites
+
+- Python 3.10+ with `./venv` already created
+- ComfyUI running on the remote machine (default: `192.168.1.196:8188`) with the Wan2.2 + LightX2V models installed
+- FFmpeg in PATH (required for `compile_montage`)
+- Claude Code CLI installed
+
+### 1. Install dependencies
+
+```bash
+cd C:/Users/Sandip/Documents/Claude/comfyui-video-mcp
+./venv/Scripts/python.exe -m pip install -r requirements.txt
+```
+
+### 2. Configure the ComfyUI host
+
+Edit `config.yaml` if your ComfyUI instance is on a different address:
+
+```yaml
+comfyui:
+  host: "192.168.1.196"
+  port: 8188
+```
+
+### 3. Set LLM provider (optional)
+
+For best results, set your Anthropic API key:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Without it, the system automatically tries Ollama (`localhost:11434`), then falls back to offline template mode. All three modes produce valid video prompts.
+
+### 4. Register with Claude Code
+
+```bash
+claude mcp add comfyui-video -- \
+  C:/Users/Sandip/Documents/Claude/comfyui-video-mcp/venv/Scripts/python.exe \
+  C:/Users/Sandip/Documents/Claude/comfyui-video-mcp/server.py
+```
+
+Verify registration:
+
+```bash
+claude mcp list
+```
+
+### 5. Test connectivity
+
+In Claude Code, call `ping_comfyui()`. A successful response confirms the ComfyUI API is reachable and the MCP server is running.
+
+### File structure
 
 ```
 comfyui-video-mcp/
-└── output/
-    ├── videos/       ← generated scene clips from ComfyUI
-    │   ├── scene_a3f2b1c0_video.mp4
-    │   └── ...
-    └── montages/     ← compiled final videos
-        ├── Blade_and_Circuit_1713276543.mp4
-        └── ...
-```
-
----
-
-## Supported Video Models
-
-| Model | Workflow File | Best For | Quality |
-|-------|--------------|---------|---------|
-| AnimateDiff | `animatediff_api.json` | Stylized animation, anime | Good |
-| Stable Video Diffusion | `svd_api.json` | Realistic motion from image | High |
-| Wan2.1 T2V | `wan21_api.json` | Pure text-to-video, general | Very High |
-
-Switch model:
-```
-configure_pipeline(model="wan21")
+├── server.py               FastMCP server, 15 MCP tools
+├── skills_engine.py        15 SkillSpec dataclasses + detect/build functions
+├── idea_generator.py       IdeaGenerator (Claude/Ollama/offline) + scene continuity
+├── comfyui_client.py       ComfyUI REST API client
+├── montage_compiler.py     FFmpeg wrapper
+├── session.py              In-memory session state
+├── run_generate.py         Standalone script (no MCP)
+├── config.yaml             All configuration
+├── output/                 Generated videos and montages
+└── workflows/
+    ├── wan22_lightx2v_api.json     Active workflow (Wan2.2 + LightX2V)
+    ├── wan22_t2v_api.json          Wan2.2 standalone
+    ├── ltxvideo_api.json           LTX-Video 2
+    └── ltxvideo_camera_api.json    LTX-Video + camera LoRA
 ```
 
 ---
 
 ## Troubleshooting
 
-**ComfyUI not reachable:**
-```
-ping_comfyui()
-→ Make sure ComfyUI is running with: python main.py --listen
-```
+### ping_comfyui() fails / connection refused
 
-**No models in ComfyUI:**
-```
-get_available_models()
-→ Download checkpoint files into ComfyUI/models/checkpoints/
-```
+- Confirm ComfyUI is running on the remote machine: open `http://192.168.1.196:8188` in a browser.
+- Check that `comfyui.host` and `comfyui.port` in `config.yaml` match your setup.
+- On Windows, confirm the firewall on the remote machine allows port 8188 inbound.
 
-**Ollama not responding:**
-```bash
-ollama serve          # start Ollama
-ollama pull llama3.2  # download model
-```
+### Generation queued but never completes
 
-**FFmpeg not found (montage fails):**
-- Download from https://ffmpeg.org/download.html
-- Add `ffmpeg/bin` to Windows PATH environment variable
-- Restart terminal
+- The `timeout` in `config.yaml` is 600 seconds. Wan2.2 14B at 81 frames takes ~108s on an RTX 4090D; slower GPUs may exceed this. Increase `timeout` if needed.
+- Check ComfyUI's own console output on the remote machine for OOM or missing model errors.
 
-**VHS_VideoCombine node missing:**
-```bat
-install_comfyui_nodes.bat
-# then restart ComfyUI
-```
+### "Model not found" error in ComfyUI
 
----
+- Verify the model files are in the correct subfolders on the remote machine (`diffusion_models/`, `loras/`, `text_encoders/`, `vae/`).
+- File names are case-sensitive. Compare exactly against the names in `config.yaml`.
 
-## Dependencies
+### Ideas are generic / ignoring the skill
 
-```
-mcp[cli]          MCP server framework
-anthropic         Claude API client
-aiohttp           Async HTTP (ComfyUI + Ollama)
-aiofiles          Async file I/O
-ffmpeg-python     FFmpeg Python bindings
-websockets        ComfyUI WebSocket progress
-pyyaml            Config file parsing
-python-dotenv     .env loading
-pillow            Image utilities
-rich              Terminal output
-```
+- Check that `inject_quality_boosters` and `inject_style_tags` are both `true` in `config.yaml`.
+- Run `detect_skill_for_notes("your notes")` to confirm the correct skill is being selected before generating ideas.
+- If using offline mode (no API key, no Ollama), prompts are templated rather than LLM-generated. Set up Ollama or add an API key for better results.
+
+### Montage compilation fails
+
+- Confirm FFmpeg is installed and on your PATH: `ffmpeg -version`.
+- Ensure all 4 scene videos exist in `output/` before calling `compile_montage`. Use `list_videos()` to verify.
+- If scenes have mismatched resolutions, the xfade filter may fail. Use `configure_pipeline()` to set a consistent resolution before generating.
+
+### Wrong protagonist across scenes
+
+- The scene continuity system re-injects the protagonist anchor after generation. If drift persists, the PROTAGONIST anchor extracted from the idea title may be too vague. Choose an idea (`select_idea`) with a clearly named or described central character.
+
+### Steps or CFG were changed and quality dropped
+
+For `wan22_lightx2v`, do not override `steps_override` (4) or `cfg_override` (1.0). The LightX2V LoRA was trained specifically for these values. Use `configure_pipeline()` only to change resolution or frames, not sampler settings.
 
 ---
 
 ## License
 
-MIT — skill frameworks adapted from [higgsfield-seedance2-jineng](https://github.com/beshuaxian/higgsfield-seedance2-jineng) (MIT).
+MIT

@@ -1,0 +1,88 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# TEMPLATE: Anime / Cyberpunk story  (4 scenes, 20 seconds)
+# Copy this file, rename it, edit scenes, then run:
+#   python run_project.py projects/your_file.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+project:
+  name: "My Anime Story"
+  output_prefix: "anime"
+
+skill:
+  id: "anime"
+  detect_from: "tokyo cyberpunk anime"   # only used when id: "auto"
+
+generation:
+  width: 640
+  height: 640
+  frames: 81                            # 81 / 16fps = ~5s per scene
+  fps: 16
+  workflow: "workflows/wan22_lightx2v_api.json"
+
+# Single-character anchor — copy this block and edit for YOUR protagonist
+visual_anchor: >
+  young woman, sharp black bob haircut with violet streak,
+  worn white oversized jacket with circuit-board pattern,
+  cracked holographic visor pushed up on forehead,
+  pale skin, dark circles under eyes
+
+extra_negative: "static, motionless, frozen, no movement, text, subtitles, watermark"
+
+# ── Scenes ───────────────────────────────────────────────────────────────────
+# anime camera vocabulary:
+#   0  dramatic pull-back from extreme close-up to full scene reveal
+#   1  impact frame freeze: single key frame held 0.3s with speed lines
+#   2  slow-motion 0.2x speed during emotional climax
+#   3  dynamic Dutch tilt 25° during intense battle
+#   4  smear frame transition between action positions
+#   5  static establishing shot with single moving element (hair, leaves)
+#   6  spiral camera orbit at power-up moment
+#   7  eye-level intimate shot for emotional dialogue
+#
+# anime lighting vocabulary:
+#   0  shonen: 150% saturated warm amber sunlight 45° above
+#   1  seinen: desaturated cool 8000K 60% contrast harsh shadows
+#   2  magical girl: soft pink 3200K omnidirectional sparkle glow
+#   3  mecha: cold industrial 6500K with neon cyan/magenta accents
+#   4  slice of life: golden hour 2800K dappled through window
+#   5  cyberpunk: dark base with neon cyan 16000K and magenta 7000K
+#   6  power-up: internal white glow expanding outward 6 second ramp
+
+scenes:
+  - act: HOOK
+    description: "Protagonist wakes up — something feels wrong"
+    camera: 0
+    lighting: 1
+    prompt: >
+      {visual_anchor},
+      eyes snapping open from black, slow blink in pristine white VR pod,
+      subtle cyan rim light from pod edges
+
+  - act: BUILD
+    description: "Protagonist walks the streets — the world is glitching"
+    camera: 5
+    lighting: 5
+    prompt: >
+      same protagonist — {visual_anchor},
+      striding down rain-slicked street, pausing as holographic buildings flicker and tear,
+      hair and neon signs moving while everything else freezes,
+      speed lines at frame edges indicating motion
+
+  - act: CLIMAX
+    description: "Confrontation with the guardian of the simulation"
+    camera: 3
+    lighting: 3
+    prompt: >
+      same protagonist — {visual_anchor}, jacket shoulder now torn, visor cracked further,
+      staring upward at colossal mechanical entity descending through shattered skyline,
+      orange explosion rim light 2400K from below, aura pulses radiating outward,
+      shrapnel sparks filling frame
+
+  - act: RESOLUTION
+    description: "Protagonist breaks free — reality dissolves into light"
+    camera: 2
+    lighting: 6
+    prompt: >
+      same protagonist — {visual_anchor}, jacket torn, visor glowing faintly,
+      kneeling on fragmented digital ground as code particles float upward,
+      violet bioluminescent particles 380nm wavelength, flowing hair lifting against gravity

@@ -18,6 +18,109 @@ When you call `generate_ideas()`, the matching skill's framework becomes the LLM
 
 ---
 
+## How Skills Actually Flow Into ComfyUI
+
+The skill data doesn't just guide the LLM — it is **directly injected** into the final prompt string. Here's the complete data flow:
+
+```
+1. detect_skill("notes")
+       │  keyword scoring across 15 SkillSpec objects
+       ▼
+2. skill.prompt_template
+       │  becomes the LLM's system persona
+       ▼
+3. skill.camera_vocabulary + skill.lighting_vocabulary
+       │  passed as examples inside SCENE_USER_TEMPLATE
+       ▼
+4. LLM writes scene prompt
+       │
+       ▼
+5. build_comfyui_positive(base, skill)
+       │  appends skill.quality_boosters[:6] + skill.style_tags[:3] to the prompt
+       ▼
+6. build_comfyui_negative(skill, custom)
+       │  prepends custom + appends skill.negative_tags on top of base negatives
+       ▼
+7. get_workflow_overrides(skill)
+       │  returns {fps, width, height, steps, cfg} for ComfyUI
+       ▼
+8. _enrich_scene(scene, skill)
+       │  post-LLM pass: inject any missing skill.quality_boosters[:4]
+       ▼
+Final prompt reaches ComfyUI with skill vocabulary baked in
+```
+
+Direct use (from `run_generate.py`):
+
+```python
+from skills_engine import detect_skill, build_comfyui_positive, build_comfyui_negative
+
+SKILL = detect_skill("tokyo cyberpunk anime virtual reality")
+# → resolves to anime SkillSpec
+
+# Pick from skill vocabulary by scene act
+cam  = SKILL.camera_vocabulary
+lite = SKILL.lighting_vocabulary
+
+base = f"{PROTAGONIST}, {cam[0]}, {lite[1]}"            # HOOK scene
+visual_prompt   = build_comfyui_positive(base, SKILL)   # → adds anime quality tags
+negative_prompt = build_comfyui_negative(
+    SKILL,
+    custom_negative="static, frozen, no movement"
+)                                                        # → adds anime negatives
+```
+
+---
+
+## Scene Continuity System
+
+Skills alone don't guarantee the same character appears across all 4 scenes. The continuity system enforces that.
+
+### The problem skills cannot solve
+
+Without continuity, an LLM generates each scene independently:
+- Scene 1: "a woman in a VR pod"
+- Scene 2: "a girl walking the street"
+- Scene 3: "female protagonist facing the creature"
+- Scene 4: "a figure kneels"
+
+Technically the same person, but ComfyUI generates 4 different-looking characters.
+
+### The fix: protagonist anchor + narrative arc
+
+`idea_generator.py` adds three mechanisms:
+
+**1. Protagonist anchor** — one description, locked across all scenes
+
+```
+young woman, sharp black bob haircut with violet streak, worn white oversized
+jacket with circuit-board pattern, cracked holographic visor pushed up on
+forehead, pale skin, dark circles under eyes
+```
+
+This exact string appears verbatim in Scene 1's `visual_prompt` and at the start of every subsequent scene's prompt. If clothing gets damaged (torn jacket, cracked visor), the damage is kept mentioned in later scenes.
+
+**2. Narrative arc — HOOK → BUILD → CLIMAX → RESOLUTION**
+
+| Scene | Act | Tension | Camera language | Lighting shift |
+|---|---|---|---|---|
+| 1 | HOOK | 10% | Wide establish pulling back from close-up | Neutral / calm |
+| 2 | BUILD | 40% | Tracking motion | Warmer / more saturated |
+| 3 | CLIMAX | 90% | Handheld Dutch tilt 15-25° | Harshest contrast |
+| 4 | RESOLUTION | 60%↓ | Slow pull-back to wide | Softer fall-off |
+
+**3. `_enforce_continuity()` post-processing pass**
+
+After the LLM returns, this function:
+- Extracts the protagonist anchor from Scene 1's dedicated `protagonist` field (or first descriptive clauses of the prompt if not set)
+- Checks every subsequent scene's first 200 characters
+- If anchor is missing, prepends `"same protagonist — [anchor], "`
+- Re-numbers scene indices, assigns act labels, validates negative prompt length
+
+Result: even if the LLM drifts, the final ComfyUI prompts have consistent character description.
+
+---
+
 ## Quick Start: 3 Commands to a Video
 
 ```

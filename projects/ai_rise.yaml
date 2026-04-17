@@ -1,0 +1,124 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# VIDEO PROJECT: AI Rise in World  (30 seconds)
+# Edit this file and run:  python run_project.py projects/ai_rise.yaml
+# No Claude needed — just edit and run.
+# ─────────────────────────────────────────────────────────────────────────────
+
+project:
+  name: "AI Rise in World"
+  output_prefix: "airise"            # output files: airise_s1_..., airise_s2_... etc.
+
+skill:
+  id: "3d_cgi"                       # auto | cinematic | 3d_cgi | anime | cartoon |
+                                     # fight_scenes | motion_design | ecommerce |
+                                     # social_hook | music_video | brand_story |
+                                     # fashion | food | real_estate
+  # If id: "auto", set detect_from so the engine picks the best skill:
+  detect_from: "AI futuristic world technology artificial intelligence"
+
+generation:
+  width: 640                         # 640x640 is Wan2.2 LightX2V sweet-spot
+  height: 640                        # use 1280x720 for widescreen (slower)
+  frames: 81                         # 81 frames / 16 fps = ~5 s per scene
+  fps: 16
+  workflow: "workflows/wan22_lightx2v_api.json"
+
+# Visual anchor — repeated motif that threads all scenes together.
+# For single-character stories use a character description.
+# For world/ensemble stories use a visual motif.
+visual_anchor: >
+  glowing cobalt-blue circuit patterns (#0066ff) etched across surfaces,
+  luminous data streams flowing like liquid light,
+  translucent holographic grid overlays,
+  fine particle constellations drifting in the air
+
+# Extra negative tags added on top of the skill's own negative list
+extra_negative: "static, motionless, frozen, no movement, text, subtitles, watermark"
+
+# ── Scenes ────────────────────────────────────────────────────────────────────
+# camera:   index into skill.camera_vocabulary  (run: python run_project.py --list-skill 3d_cgi)
+# lighting: index into skill.lighting_vocabulary
+#
+# 3d_cgi camera vocabulary:
+#   0  smooth orbital rotation at 45°/s around subject
+#   1  cinematic crane shot rising from ground to 20ft elevation
+#   2  dramatic push-in from 15ft to 2ft in 3 seconds
+#   3  tracking shot following subject at constant 3ft distance
+#   4  aerial bird's-eye descent from 100ft to 30ft
+#   5  first-person fly-through at 8 ft/s
+#   6  parallax shift left at 0.5 ft/s for depth illusion
+#   7  360° turntable rotation at 30°/s, camera fixed at 15° elevation
+#
+# 3d_cgi lighting vocabulary:
+#   0  HDRI golden-hour environment map 2700K, sun disc at 15° elevation
+#   1  three-point studio rig: 5600K key, 3200K fill, 6000K rim
+#   2  dramatic side-lighting 4000K with hard shadow at 85° angle
+#   3  volumetric god rays 5500K penetrating through fog at 30° angle
+#   4  neon cyberpunk mixed: cyan 16000K left, magenta 7000K right
+#   5  product turntable: front-key 5600K soft box, fill 45° opposite, rim 180° back
+
+scenes:
+  - act: HOOK
+    description: "A single server awakens — the first spark of artificial consciousness"
+    camera: 2
+    lighting: 3
+    prompt: >
+      a single dark server rack in a vast empty datacenter,
+      one blinking green LED suddenly flares brilliant cobalt-blue,
+      and cascades outward as {visual_anchor},
+      cold metallic floor reflecting first sparks of awareness
+
+  - act: BUILD1
+    description: "Intelligence ignites across Earth, city by city"
+    camera: 4
+    lighting: 0
+    prompt: >
+      view of planet Earth at night from low orbit,
+      {visual_anchor} igniting city by city across continents,
+      thin cobalt neural filaments webbing between metropolises
+      like synapses firing in a waking brain,
+      terminator line glowing where dawn meets intelligence
+
+  - act: BUILD2
+    description: "AI integrates into daily human life"
+    camera: 3
+    lighting: 1
+    prompt: >
+      modern city street at dusk, diverse pedestrians walking,
+      subtle {visual_anchor} floating beside each person,
+      holographic assistants projecting maps translations and notifications,
+      a child laughing as a small drone companion orbits her shoulder,
+      warm shopfront practicals mixing with cool holographic glow
+
+  - act: CLIMAX1
+    description: "A vast data-core surpasses human capability — awe and unease"
+    camera: 0
+    lighting: 4
+    prompt: >
+      colossal crystalline data-core suspended in a vaulted arcology,
+      its surface alive with {visual_anchor} pulsing faster than the eye can follow,
+      human engineers silhouetted on a balcony tiny against its scale,
+      equations and molecular structures blooming in the air around it,
+      awe and unease in equal measure
+
+  - act: CLIMAX2
+    description: "Humans and AI collaborate as partners"
+    camera: 1
+    lighting: 2
+    prompt: >
+      open-plan research lab, a female scientist and a humanoid AI avatar
+      standing shoulder to shoulder at a vast transparent display,
+      gesturing together as {visual_anchor} weaves a rotating molecular model
+      between their hands, other researchers working alongside AI counterparts,
+      sense of partnership and momentum
+
+  - act: RESOLUTION
+    description: "A new equilibrium — harmony between humanity and intelligence"
+    camera: 6
+    lighting: 0
+    prompt: >
+      serene futuristic skyline at sunrise, lush vertical gardens cascading
+      down glass towers, self-organising drones tending crops on rooftops,
+      faint {visual_anchor} pulsing slowly like a calm heartbeat through the city,
+      people walking peacefully below AI companions indistinguishable from friends,
+      warm amber light suffusing a balanced civilisation

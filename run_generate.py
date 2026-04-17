@@ -26,8 +26,8 @@ SKILL = detect_skill("tokyo cyberpunk anime virtual reality")
 
 # ── Workflow resolution/fps from skill's technical_specs ─────────────────────
 # Wan2.2 works best at 640×640; skill fps used for the video encoder
-WIDTH  = 640    # Wan2.2 LightX2V sweet-spot
-HEIGHT = 640
+WIDTH  = 1280    # Wan2.2 LightX2V sweet-spot
+HEIGHT = 720
 FRAMES = 81     # 81 ÷ 16 fps ≈ 5 s of video
 FPS    = SKILL.technical_specs.get("fps", 16)   # anime: 24 fps
 

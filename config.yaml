@@ -84,8 +84,8 @@ models:
     steps_override: 4      # LightX2V 4-step LoRA — do NOT change
     cfg_override: 1.0      # LightX2V requires low CFG — do NOT change
     shift: 5.0             # ModelSamplingSD3 shift
-    default_width: 640
-    default_height: 640
+    default_width: 1280
+    default_height: 720
     default_frames: 81     # 81 frames ÷ 16 fps ≈ 5 s
     default_fps: 16
 

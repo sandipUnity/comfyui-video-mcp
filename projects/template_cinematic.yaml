@@ -1,0 +1,82 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# TEMPLATE: Cinematic / Live-action story  (4 scenes)
+# Copy, edit, run:  python run_project.py projects/your_file.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+project:
+  name: "My Cinematic Story"
+  output_prefix: "cinematic"
+
+skill:
+  id: "cinematic"
+  detect_from: "cinematic film dramatic"
+
+generation:
+  width: 1280
+  height: 720
+  frames: 81
+  fps: 24
+  workflow: "workflows/wan22_lightx2v_api.json"
+
+visual_anchor: >
+  middle-aged man, weathered face, grey stubble, worn leather jacket,
+  deep-set brown eyes reflecting inner conflict
+
+extra_negative: "static, motionless, frozen, text, watermark, subtitles"
+
+# cinematic camera vocabulary:
+#   0  slow dolly push-in 0.3 ft/s over 4 seconds
+#   1  handheld follow at shoulder height, slight shake 0-2% jitter
+#   2  wide establishing crane shot descending 20ft to eye level
+#   3  extreme close-up on eyes/hands with shallow DOF f/1.4
+#   4  Steadicam tracking at 5 ft/s, subject centred
+#   5  360° orbit at 2ft distance, slow 8s rotation
+#   6  static locked-off wide with moving foreground element
+#   7  Dutch tilt 15° snap to straight over 0.5s
+#
+# cinematic lighting vocabulary:
+#   0  golden-hour backlight 2800K, lens flare 12%, fill bounce 0.4 stop under
+#   1  overcast diffuse 6500K flat key, practicals at 2700K for warmth
+#   2  hard noir side-key 3200K, deep shadows 85% black, single kicker 180°
+#   3  neon-lit urban night: sodium 1900K base, neon practicals mixed 3200-5500K
+#   4  interior motivated: window key 5600K, interior fill 3200K, -2 stop ratio
+#   5  dramatic storm light: blue-grey 8000K, rim separation, low contrast
+
+scenes:
+  - act: HOOK
+    description: "Protagonist receives a life-changing message"
+    camera: 3
+    lighting: 4
+    prompt: >
+      {visual_anchor},
+      sitting alone at a kitchen table at night, phone screen casting blue light on face,
+      reading a message, expression shifting from tired to alarmed
+
+  - act: BUILD
+    description: "Protagonist makes a decision — packs a bag"
+    camera: 1
+    lighting: 2
+    prompt: >
+      same protagonist — {visual_anchor},
+      standing in dim bedroom, methodically placing items into a worn travel bag,
+      shadows long and dramatic, one lamp casting harsh side-light
+
+  - act: CLIMAX
+    description: "Confrontation on a rain-slicked street"
+    camera: 5
+    lighting: 3
+    prompt: >
+      same protagonist — {visual_anchor},
+      facing an unseen figure across a wet city street at night,
+      neon reflections shimmering in puddles, tension visible in jaw and posture,
+      rain falling through pools of orange street-light
+
+  - act: RESOLUTION
+    description: "Protagonist walks away into the dawn"
+    camera: 2
+    lighting: 0
+    prompt: >
+      same protagonist — {visual_anchor}, seen from behind,
+      walking alone down an empty road toward the horizon at dawn,
+      golden backlight, long shadow stretching behind him,
+      sense of loss and hard-won freedom
