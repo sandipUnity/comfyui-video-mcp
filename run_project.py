@@ -149,16 +149,21 @@ def fill_workflow(scene: dict, wf_template: str, output_prefix: str) -> dict:
     seed   = random.randint(0, 2**31 - 1)
     prefix = f"{output_prefix}_s{scene['scene_number']}_{int(time.time())}"
 
+    # json.dumps(v)[1:-1] → properly JSON-escaped string without surrounding quotes.
+    # Handles em-dashes, quotes, backslashes, newlines, etc. inside prompts.
+    def je(v: str) -> str:
+        return json.dumps(v)[1:-1]
+
     t = wf_template
     for ph, val in {
-        "{{POSITIVE_PROMPT}}": scene["visual_prompt"],
-        "{{NEGATIVE_PROMPT}}": scene["negative_prompt"],
+        "{{POSITIVE_PROMPT}}": je(scene["visual_prompt"]),
+        "{{NEGATIVE_PROMPT}}": je(scene["negative_prompt"]),
         "{{WIDTH}}":           str(width),
         "{{HEIGHT}}":          str(height),
         "{{FRAMES}}":          str(frames),
         "{{FPS}}":             str(fps),
         "{{SEED}}":            str(seed),
-        "{{OUTPUT_PREFIX}}":   prefix,
+        "{{OUTPUT_PREFIX}}":   je(prefix),
     }.items():
         t = t.replace(ph, val)
     return json.loads(t)

@@ -143,16 +143,17 @@ WF_TEMPLATE = open("workflows/wan22_lightx2v_api.json").read()
 def fill_workflow(scene: dict) -> dict:
     seed   = random.randint(0, 2**31 - 1)
     prefix = f"dreamscape_s{scene['scene_number']}_{int(time.time())}"
+    je = lambda v: json.dumps(v)[1:-1]  # JSON-escape string without surrounding quotes
     t = WF_TEMPLATE
     for ph, val in {
-        "{{POSITIVE_PROMPT}}": scene["visual_prompt"],
-        "{{NEGATIVE_PROMPT}}": scene["negative_prompt"],
+        "{{POSITIVE_PROMPT}}": je(scene["visual_prompt"]),
+        "{{NEGATIVE_PROMPT}}": je(scene["negative_prompt"]),
         "{{WIDTH}}":           str(WIDTH),
         "{{HEIGHT}}":          str(HEIGHT),
         "{{FRAMES}}":          str(FRAMES),
         "{{FPS}}":             str(FPS),
         "{{SEED}}":            str(seed),
-        "{{OUTPUT_PREFIX}}":   prefix,
+        "{{OUTPUT_PREFIX}}":   je(prefix),
     }.items():
         t = t.replace(ph, val)
     return json.loads(t)
