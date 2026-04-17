@@ -17,7 +17,8 @@ from comfyui_client import ComfyUIClient
 CONFIG       = yaml.safe_load(open("config.yaml", encoding="utf-8"))
 PROJECTS_DIR = Path("projects")
 PROJECTS_DIR.mkdir(exist_ok=True)
-WORKFLOWS    = sorted(Path("workflows").glob("*.json"))
+# Use forward slashes on all platforms so YAML paths always match selectbox values
+WORKFLOWS    = sorted(p.as_posix() for p in Path("workflows").glob("*.json"))
 
 SKILL_IDS    = ["auto"] + list(SKILLS.keys())
 SKILL_NAMES  = {"auto": "Auto-detect from description"} | {k: v.name for k, v in SKILLS.items()}
@@ -274,8 +275,10 @@ with tab_settings:
                                   help="81 frames / 16 fps ≈ 5 s  |  161 frames ≈ 10 s")
         gen["fps"]    = st.select_slider("FPS", options=[8, 12, 16, 24, 30], value=gen.get("fps", 16))
 
-        wf_names = [str(w) for w in WORKFLOWS]
-        cur_wf   = gen.get("workflow", "workflows/wan22_lightx2v_api.json")
+        # WORKFLOWS is already a list of forward-slash strings (e.g. "workflows/wan22_lightx2v_api.json")
+        wf_names = WORKFLOWS
+        # Normalise stored path to forward slashes so the match works on Windows too
+        cur_wf   = Path(gen.get("workflow", "workflows/wan22_lightx2v_api.json")).as_posix()
         wf_idx   = wf_names.index(cur_wf) if cur_wf in wf_names else 0
         gen["workflow"] = st.selectbox("Workflow", wf_names, index=wf_idx)
 
