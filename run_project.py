@@ -142,31 +142,39 @@ def build_scenes(proj: dict, skill) -> list[dict]:
 
 def fill_workflow(scene: dict, wf_template: str, output_prefix: str) -> dict:
     gen    = scene["gen"]
-    width  = gen.get("width",  640)
-    height = gen.get("height", 640)
-    frames = gen.get("frames", 81)
-    fps    = gen.get("fps",    16)
     seed   = random.randint(0, 2**31 - 1)
     prefix = f"{output_prefix}_s{scene['scene_number']}_{int(time.time())}"
 
-    # json.dumps(v)[1:-1] → properly JSON-escaped string without surrounding quotes.
-    # Handles em-dashes, quotes, backslashes, newlines, etc. inside prompts.
-    def je(v: str) -> str:
-        return json.dumps(v)[1:-1]
-
+    # Step 1: replace only NUMERIC placeholders via string replace (safe).
     t = wf_template
     for ph, val in {
-        "{{POSITIVE_PROMPT}}": je(scene["visual_prompt"]),
-        "{{NEGATIVE_PROMPT}}": je(scene["negative_prompt"]),
-        "{{WIDTH}}":           str(width),
-        "{{HEIGHT}}":          str(height),
-        "{{FRAMES}}":          str(frames),
-        "{{FPS}}":             str(fps),
-        "{{SEED}}":            str(seed),
-        "{{OUTPUT_PREFIX}}":   je(prefix),
+        "{{WIDTH}}":  str(gen.get("width",  640)),
+        "{{HEIGHT}}": str(gen.get("height", 640)),
+        "{{FRAMES}}": str(gen.get("frames", 81)),
+        "{{FPS}}":    str(gen.get("fps",    16)),
+        "{{SEED}}":   str(seed),
     }.items():
         t = t.replace(ph, val)
-    return json.loads(t)
+
+    # Step 2: parse JSON — string placeholders are valid JSON strings at this point.
+    wf = json.loads(t)
+
+    # Step 3: inject string values directly into the parsed dict — no escaping needed.
+    str_map = {
+        "{{POSITIVE_PROMPT}}": scene["visual_prompt"],
+        "{{NEGATIVE_PROMPT}}": scene["negative_prompt"],
+        "{{OUTPUT_PREFIX}}":   prefix,
+    }
+
+    def _inject(d: dict):
+        for k, v in d.items():
+            if isinstance(v, dict):
+                _inject(v)
+            elif isinstance(v, str) and v in str_map:
+                d[k] = str_map[v]
+
+    _inject(wf)
+    return wf
 
 
 def print_dry_run(proj: dict, scenes: list, skill):

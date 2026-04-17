@@ -100,23 +100,38 @@ def fill_workflow(scene: dict, wf_template: str, output_prefix: str) -> dict:
     gen    = scene["gen"]
     seed   = random.randint(0, 2**31 - 1)
     prefix = f"{output_prefix}_s{scene['scene_number']}_{int(time.time())}"
-    t      = wf_template
-    # json.dumps(v)[1:-1] → properly JSON-escaped string without surrounding quotes.
-    # This handles em-dashes, quotes, backslashes, newlines, etc. in prompts.
-    def je(v: str) -> str:
-        return json.dumps(v)[1:-1]
+
+    # Step 1: replace only NUMERIC placeholders via string replace (safe — no special chars).
+    t = wf_template
     for ph, val in {
-        "{{POSITIVE_PROMPT}}": je(scene["visual_prompt"]),
-        "{{NEGATIVE_PROMPT}}": je(scene["negative_prompt"]),
-        "{{WIDTH}}":           str(gen.get("width", 640)),
-        "{{HEIGHT}}":          str(gen.get("height", 640)),
-        "{{FRAMES}}":          str(gen.get("frames", 81)),
-        "{{FPS}}":             str(gen.get("fps", 16)),
-        "{{SEED}}":            str(seed),
-        "{{OUTPUT_PREFIX}}":   je(prefix),
+        "{{WIDTH}}":  str(gen.get("width",  640)),
+        "{{HEIGHT}}": str(gen.get("height", 640)),
+        "{{FRAMES}}": str(gen.get("frames", 81)),
+        "{{FPS}}":    str(gen.get("fps",    16)),
+        "{{SEED}}":   str(seed),
     }.items():
         t = t.replace(ph, val)
-    return json.loads(t)
+
+    # Step 2: parse JSON — string placeholders like "{{POSITIVE_PROMPT}}" are valid JSON strings.
+    wf = json.loads(t)
+
+    # Step 3: walk the dict and swap placeholder strings → real values.
+    # No JSON escaping ever touches the prompt text — immune to em-dashes, quotes, newlines, etc.
+    str_map = {
+        "{{POSITIVE_PROMPT}}": scene["visual_prompt"],
+        "{{NEGATIVE_PROMPT}}": scene["negative_prompt"],
+        "{{OUTPUT_PREFIX}}":   prefix,
+    }
+
+    def _inject(d: dict):
+        for k, v in d.items():
+            if isinstance(v, dict):
+                _inject(v)
+            elif isinstance(v, str) and v in str_map:
+                d[k] = str_map[v]
+
+    _inject(wf)
+    return wf
 
 
 async def _get_queue_status():

@@ -143,20 +143,35 @@ WF_TEMPLATE = open("workflows/wan22_lightx2v_api.json").read()
 def fill_workflow(scene: dict) -> dict:
     seed   = random.randint(0, 2**31 - 1)
     prefix = f"dreamscape_s{scene['scene_number']}_{int(time.time())}"
-    je = lambda v: json.dumps(v)[1:-1]  # JSON-escape string without surrounding quotes
+
+    # Step 1: numeric placeholders only (safe string replace)
     t = WF_TEMPLATE
     for ph, val in {
-        "{{POSITIVE_PROMPT}}": je(scene["visual_prompt"]),
-        "{{NEGATIVE_PROMPT}}": je(scene["negative_prompt"]),
-        "{{WIDTH}}":           str(WIDTH),
-        "{{HEIGHT}}":          str(HEIGHT),
-        "{{FRAMES}}":          str(FRAMES),
-        "{{FPS}}":             str(FPS),
-        "{{SEED}}":            str(seed),
-        "{{OUTPUT_PREFIX}}":   je(prefix),
+        "{{WIDTH}}":  str(WIDTH),
+        "{{HEIGHT}}": str(HEIGHT),
+        "{{FRAMES}}": str(FRAMES),
+        "{{FPS}}":    str(FPS),
+        "{{SEED}}":   str(seed),
     }.items():
         t = t.replace(ph, val)
-    return json.loads(t)
+
+    # Step 2: parse JSON, Step 3: inject strings directly into parsed dict
+    wf = json.loads(t)
+    str_map = {
+        "{{POSITIVE_PROMPT}}": scene["visual_prompt"],
+        "{{NEGATIVE_PROMPT}}": scene["negative_prompt"],
+        "{{OUTPUT_PREFIX}}":   prefix,
+    }
+
+    def _inject(d):
+        for k, v in d.items():
+            if isinstance(v, dict):
+                _inject(v)
+            elif isinstance(v, str) and v in str_map:
+                d[k] = str_map[v]
+
+    _inject(wf)
+    return wf
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
