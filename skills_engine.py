@@ -792,6 +792,36 @@ def build_comfyui_negative(skill: SkillSpec, custom_negative: str = "") -> str:
     return ", ".join(combined)
 
 
+def build_comfyui_video_prompt(
+    base_prompt: str,
+    skill: SkillSpec,
+    cam: str = "",
+    motion_style: str = "",
+) -> str:
+    """Build a motion-focused video prompt for I2V generation.
+
+    Unlike build_comfyui_positive(), this targets *movement and action* rather
+    than visual appearance — the reference image already defines the look.
+
+    Args:
+        base_prompt:   Scene description or action sentence.
+        skill:         Skill for motion vocabulary and style tags.
+        cam:           Specific camera move for this scene (from skill.camera_vocabulary).
+        motion_style:  Project-level motion descriptor (from StyleDNA.motion_style).
+
+    Returns:
+        Comma-joined motion prompt string.
+    """
+    parts = [base_prompt.strip()]
+    if cam:
+        parts.append(cam)
+    if motion_style:
+        parts.append(motion_style)
+    # Two style tags keep the clip tonally consistent with the storyboard
+    parts.extend(skill.style_tags[:2])
+    return ", ".join(p for p in parts if p)
+
+
 def get_workflow_overrides(skill: SkillSpec) -> dict:
     """Get ComfyUI generation parameter overrides for a skill."""
     return {
