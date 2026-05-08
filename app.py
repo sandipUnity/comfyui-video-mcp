@@ -10,11 +10,13 @@ Run:  venv\\Scripts\\streamlit run app.py
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 import streamlit as st
 import yaml
@@ -36,10 +38,24 @@ from pipeline.story_generator import (
     generate_character_description,
 )
 from skills_engine import SKILLS, build_comfyui_positive, build_comfyui_negative
+from pipeline import (
+    build_story_prompt, build_character_prompt,
+    build_scene_prompts_prompt, build_single_scene_prompt,
+    parse_story_response, parse_character_response,
+    parse_scene_prompts_response, parse_error_message,
+)
+from pipeline import (
+    write_pending_job, read_result,
+    pending_job_count, done_job_count_today,
+)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CONFIG = yaml.safe_load(open("config.yaml", encoding="utf-8"))
-PROJECTS_DIR = Path("projects")
+# Anchor all paths to the directory that contains app.py so the UI works
+# regardless of which directory the user launches Streamlit from.
+_APP_DIR = Path(__file__).parent
+
+CONFIG = yaml.safe_load(open(_APP_DIR / "config.yaml", encoding="utf-8"))
+PROJECTS_DIR = _APP_DIR / "projects"
 PROJECTS_DIR.mkdir(exist_ok=True)
 
 # ── Step metadata ─────────────────────────────────────────────────────────────
@@ -79,6 +95,15 @@ _ss("regen_scene_id", None)     # scene_id being regenerated in review step
 _ss("model_check_results", None) # dict | None — cached model availability check
 _ss("queue_scene_idx", None)    # int | None — which scene is currently being queued (Step 11)
 _ss("montage_path", None)       # str | None — path to compiled montage (Step 13)
+_ss("ai_mode", "copy_paste")   # str — active AI generation mode
+_ss("mcp_worker_active", False) # bool — user signals that Claude Code worker is running
+# Per-stage MCP job tracking
+_ss("mcp_story_job",    None)   # str | None — pending job_id for Step 3
+_ss("mcp_story_start",  None)   # float | None — time.time() when submitted
+_ss("mcp_char_job",     None)   # str | None — pending job_id for Step 4
+_ss("mcp_char_start",   None)
+_ss("mcp_scenes_job",   None)   # str | None — pending job_id for Step 5
+_ss("mcp_scenes_start", None)
 
 # ── Shortcuts ─────────────────────────────────────────────────────────────────
 def proj() -> ProjectState | None:
@@ -90,7 +115,22 @@ def set_proj(p: ProjectState):
 def save():
     p = proj()
     if p:
-        p.save()
+        # Use absolute path so saves land in the right place regardless of CWD
+        p.save(PROJECTS_DIR / f"{p.project_name}.json")
+
+
+def _clear_all_mcp_state():
+    """Clear every MCP job key and per-step session cache.
+
+    Called when loading or creating a project so stale job IDs from a
+    previous session never trigger the loading overlay on the new project.
+    """
+    for key in ("mcp_story_job", "mcp_story_start",
+                "mcp_char_job",  "mcp_char_start",
+                "mcp_scenes_job","mcp_scenes_start"):
+        st.session_state[key] = None
+    st.session_state.story_options  = None
+    st.session_state.gen_scene_idx  = None
 
 def client() -> ComfyUIClient:
     return ComfyUIClient(CONFIG["comfyui"]["host"], CONFIG["comfyui"]["port"])
@@ -144,6 +184,46 @@ with st.sidebar:
 
     st.divider()
 
+    # ── MCP Worker status ─────────────────────────────────────────────────────
+    st.subheader("🤖 MCP Worker")
+
+    worker_active = st.session_state.get("mcp_worker_active", False)
+    worker_toggle = st.toggle(
+        "Worker is running",
+        value=worker_active,
+        key="mcp_worker_toggle",
+        help=(
+            "Check this after starting the pipeline worker in Claude Code. "
+            "Enables the 🤖 MCP Auto mode button in Steps 3, 4, and 5."
+        ),
+    )
+    if worker_toggle != worker_active:
+        st.session_state.mcp_worker_active = worker_toggle
+        # If worker just deactivated while in MCP mode, fall back to copy_paste
+        if not worker_toggle and st.session_state.get("ai_mode") == "mcp":
+            st.session_state.ai_mode = "copy_paste"
+        st.rerun()
+
+    if worker_active:
+        n_pending = pending_job_count()
+        n_done    = done_job_count_today()
+        st.success("✅ Worker active")
+        col_a, col_b = st.columns(2)
+        col_a.metric("Pending jobs", n_pending)
+        col_b.metric("Done today",   n_done)
+    else:
+        with st.expander("How to start the worker"):
+            st.markdown(
+                "1. Open a **Claude Code** session in this project folder\n"
+                "2. Type: **`start pipeline worker`**\n"
+                "3. Claude Code will begin monitoring and auto-processing jobs\n"
+                "4. Come back here and check **Worker is running** above\n\n"
+                "The `.mcp.json` file in this project registers the pipeline "
+                "MCP server so Claude Code connects automatically on startup."
+            )
+
+    st.divider()
+
     # ── Project management ────────────────────────────────────────────────────
     st.subheader("Projects")
     json_files = sorted(PROJECTS_DIR.glob("*.json"))
@@ -154,8 +234,7 @@ with st.sidebar:
         if sel != "— new —" and st.button("Load", use_container_width=True):
             loaded = ProjectState.load(PROJECTS_DIR / f"{sel}.json")
             set_proj(loaded)
-            st.session_state.story_options = None
-            st.session_state.gen_scene_idx = None
+            _clear_all_mcp_state()
             st.rerun()
     else:
         st.info("No saved projects yet.")
@@ -166,9 +245,322 @@ with st.sidebar:
 
     if st.button("New project", use_container_width=True):
         set_proj(None)
-        st.session_state.story_options = None
-        st.session_state.gen_scene_idx = None
+        _clear_all_mcp_state()
         st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI MODE SELECTOR — shared widget used in Steps 3, 4, 5
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _render_mode_selector(on_change: "Callable[[str], None] | None" = None) -> str:
+    """Render the AI generation mode selector. Returns the current mode string.
+
+    Args:
+        on_change: optional callback called with the *new* mode string whenever
+                   the user switches to a different mode.  Use it to clear
+                   stale per-step content so the new mode's UI is shown fresh.
+
+    Modes
+    -----
+    copy_paste  — user copies a prompt, pastes it into any chatbot, pastes
+                  the JSON response back into the UI
+    mechanical  — rule-based, no AI  (always available)
+    mcp         — MCP Auto via Claude Code session
+    api_key     — Anthropic API key  (coming later)
+    """
+    mode        = st.session_state.get("ai_mode", "copy_paste")
+    mcp_active  = st.session_state.get("mcp_worker_active", False)
+
+    def _switch(new_mode: str) -> None:
+        """Switch mode, fire on_change callback if mode actually changed."""
+        if new_mode != st.session_state.get("ai_mode"):
+            if on_change is not None:
+                on_change(new_mode)
+        st.session_state.ai_mode = new_mode
+        st.rerun()
+
+    with st.container(border=True):
+        st.caption(
+            "AI generation mode — choose how story / character / scene content is produced"
+        )
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            mcp_label = "🤖 MCP Auto" + (" ◀" if mode == "mcp" else "")
+            if mcp_active:
+                if st.button(
+                    mcp_label,
+                    type="primary" if mode == "mcp" else "secondary",
+                    use_container_width=True,
+                    key="mode_mcp",
+                    help="Claude Code processes jobs automatically — worker is active",
+                ):
+                    _switch("mcp")
+            else:
+                st.button(
+                    "🤖 MCP Auto",
+                    disabled=True,
+                    use_container_width=True,
+                    key="mode_mcp",
+                    help="Enable in sidebar: mark MCP Worker as active first",
+                )
+        with c2:
+            if st.button(
+                "✂️ Copy-Paste" + (" ◀" if mode == "copy_paste" else ""),
+                type="primary" if mode == "copy_paste" else "secondary",
+                use_container_width=True,
+                key="mode_cp",
+                help="Generate a prompt here → paste into any chatbot → paste response back",
+            ):
+                _switch("copy_paste")
+        with c3:
+            if st.button(
+                "⚙️ Mechanical" + (" ◀" if mode == "mechanical" else ""),
+                type="primary" if mode == "mechanical" else "secondary",
+                use_container_width=True,
+                key="mode_mech",
+                help="Rule-based generation — no AI, no chatbot needed",
+            ):
+                _switch("mechanical")
+        with c4:
+            st.button(
+                "🔑 API Key",
+                disabled=True,
+                use_container_width=True,
+                key="mode_apikey",
+                help="Anthropic API key integration — coming later",
+            )
+    return mode
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MCP LOADING SCREEN
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Tips rotate every 8 seconds — keyed by stage
+_MCP_TIPS: dict[str, list[tuple[str, str]]] = {
+    "story_options": [
+        ("💡", "Add a mood like *'melancholic'*, *'tense'* or *'euphoric'* on Step 1 — it shapes the entire narrative structure Claude picks."),
+        ("🎬", "Each of the 3 story options has a genuinely different arc — compare them before choosing. You can't go back without regenerating."),
+        ("📐", "Longer duration = more scenes = richer cinematic development. 60-second videos support full 5-act structures."),
+        ("🎭", "The *arc* field uses 5 emotional beats separated by → — these guide the visual language of every scene downstream."),
+        ("✂️", "In Copy-Paste mode you can use any chatbot — Claude.ai, ChatGPT, Gemini. The JSON schema works everywhere."),
+        ("🎯", "Scene descriptions are intentionally one sentence. Brevity forces visual specificity — which models respond to better."),
+        ("🧠", "Claude Code has full knowledge of your chosen visual style and colour palette — it bakes them into every story beat."),
+        ("🔄", "Not happy with the options? Hit **Regenerate** — each run produces genuinely different narrative structures."),
+    ],
+    "character_description": [
+        ("📸", "In Copy-Paste mode you can attach a **reference photo** to your chatbot message — the AI will match the description to what it sees."),
+        ("👁️", "The character description gets injected into *every single scene prompt* — visual consistency across all scenes depends on it."),
+        ("🎭", "Be specific about clothing: *'worn canvas duster, open at the collar'* generates far more consistent results than just *'jacket'*."),
+        ("🔍", "Add one unmistakable physical detail — a scar, unusual eye colour, or specific accessory — as a recognition anchor across scenes."),
+        ("💡", "Avoid vague adjectives like *'beautiful'* or *'strong'*. Describe exactly what a camera lens would capture."),
+        ("🎬", "Age range matters more than exact age: *'mid-forties'* is more stable than *'44 years old'* across image models."),
+        ("🧵", "Fabric and texture descriptions help: *'sun-bleached linen'* tells the model about light behaviour, not just colour."),
+        ("🌗", "Skin tone described in lighting terms (*'warm olive under harsh sunlight'*) integrates better with your scene lighting presets."),
+    ],
+    "scene_prompts": [
+        ("🎬", "Visual prompts describe what the **storyboard image** looks like. Video prompts describe only **motion** — never duplicate appearance."),
+        ("⚡", "End each video prompt with exactly one pacing word: `[slow]` `[medium]` `[fast]` `[explosive]` — this controls I2V inference speed."),
+        ("📷", "Camera moves get precise: *'dolly forward 3 ft/s'* gives the model a measurable instruction. *'epic camera move'* does nothing."),
+        ("💡", "Lighting in Kelvin (*3000K warm key*) + ratios (*100% key / 33% fill / 60% back rim*) produces more consistent light matching across scenes."),
+        ("🔄", "You can **reprompt individual scenes** after generation — use the ↩️ reprompt button on any scene card without redoing the full batch."),
+        ("🎨", "Quality boosters are appended automatically — they tell ComfyUI which rendering style to prioritise. Don't repeat them manually."),
+        ("🌊", "Environmental motion details in video prompts (*wind in fabric, sand shifting, crowd swaying*) dramatically improve I2V realism."),
+        ("🏗️", "Depth of field notation (*f/1.4 for shallow, f/11 for deep*) helps image models render the correct background blur for each scene."),
+    ],
+}
+
+# Generic tips shown when stage has no specific tips or for variety
+_MCP_TIPS_GENERIC: list[tuple[str, str]] = [
+    ("🚀", "This pipeline uses **LTX-Video 2.3** (22-billion parameters) for image-to-video generation — one of the most capable open I2V models available."),
+    ("🧠", "Claude Code processes your prompts directly in-session — no external API calls, no rate limits, no cost per generation."),
+    ("⏱️", "Each 5-second video scene typically takes **2–10 minutes** on a modern GPU, depending on resolution and sampling steps."),
+    ("🎞️", "The final montage stitches all scene videos in narrative order with optional fade transitions and audio normalisation."),
+    ("💾", "Projects are auto-saved after every step — you can close the browser and resume exactly where you left off."),
+    ("🖼️", "You can generate **1–5 storyboard images per scene** and choose the best one before committing to video generation."),
+    ("🎨", "The **Cinematic** style uses 3000K warm key light at 45° camera-left with a 100/33/60 key-fill-back intensity ratio."),
+    ("📡", "The Monitor step streams live ComfyUI progress via WebSocket — you see frame-by-frame updates as each video renders."),
+]
+
+
+def _render_mcp_loading_screen(stage: str, elapsed: float, job_id: str,
+                               job_key: str, start_key: str) -> None:
+    """Render a full-page MCP waiting screen using only Streamlit-native widgets.
+
+    CSS is scoped tightly to class names used only here — no global selectors
+    that could bleed into the rest of the app between Streamlit reruns.
+    The router skips fn() while this is shown, so the page contains ONLY
+    this loading content + the cancel button.
+    """
+    # Scroll to top so the loading screen is always fully visible
+    _scroll_to_top()
+
+    # ── Stage display config ──────────────────────────────────────────────────
+    stage_meta = {
+        "story_options":         ("📖", "Story Options",         "Crafting 3 cinematic narrative treatments…"),
+        "character_description": ("🧑", "Character Description", "Defining your protagonist's visual identity…"),
+        "scene_prompts":         ("🎬", "Scene Prompts",         "Writing cinematographer & director prompts for every scene…"),
+    }
+    icon, label, subtitle = stage_meta.get(stage, ("🤖", stage.replace("_", " ").title(), "Processing…"))
+
+    mins, secs = divmod(int(elapsed), 60)
+    elapsed_str = f"{mins}m {secs}s" if mins else f"{secs}s"
+
+    pool = _MCP_TIPS.get(stage, []) + _MCP_TIPS_GENERIC
+    tip_icon, tip_text = pool[int(elapsed / 8) % len(pool)]
+
+    dot_states = ["●  ○  ○", "○  ●  ○", "○  ○  ●", "○  ●  ○"]
+    dots = dot_states[int(elapsed / 0.75) % len(dot_states)]
+
+    bar_pct = int((elapsed % 20) / 20 * 100)
+
+    # animation-delay keeps the spinner at the correct rotation angle after each
+    # rerun — avoids the visual "jump back to 0°" blink every 2 seconds.
+    spin_delay = -(elapsed % 1.0)
+
+    # ── Scoped CSS — uses unique class prefix, no global element selectors ────
+    st.markdown(f"""
+<style>
+@keyframes mcp-spin {{
+    from {{ transform: rotate(0deg); }} to {{ transform: rotate(360deg); }}
+}}
+.mcp-wrap {{
+    display: flex; flex-direction: column; align-items: center;
+    padding: 60px 16px 40px; min-height: 80vh; justify-content: center;
+}}
+.mcp-ring {{
+    width: 64px; height: 64px;
+    border: 4px solid rgba(79,142,247,.15);
+    border-top-color: #4f8ef7;
+    border-radius: 50%;
+    animation: mcp-spin 1s linear {spin_delay:.3f}s infinite;
+    margin-bottom: 32px;
+}}
+.mcp-card {{
+    width: 100%; max-width: 660px;
+    background: rgba(22,26,46,.7);
+    border: 1px solid rgba(79,142,247,.22);
+    border-radius: 14px;
+    padding: 34px 40px 28px;
+    text-align: center;
+}}
+.mcp-icon   {{ font-size: 2.4rem; margin-bottom: 12px; }}
+.mcp-title  {{ font-size: 1.4rem; font-weight: 700; color: #e8eaf6; margin: 0 0 6px; }}
+.mcp-sub    {{ font-size: 0.9rem;  color: #8892b0; margin: 0 0 20px; }}
+.mcp-dots   {{ font-size: 1.2rem; letter-spacing: 6px; color: #4f8ef7;
+              margin-bottom: 18px; font-family: monospace; }}
+.mcp-bar-track {{
+    width: 100%; height: 3px; background: rgba(79,142,247,.12);
+    border-radius: 2px; overflow: hidden; margin-bottom: 24px;
+}}
+.mcp-tip {{
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.07);
+    border-left: 3px solid #f7a84f;
+    border-radius: 8px; padding: 12px 16px;
+    margin-bottom: 20px; text-align: left;
+}}
+.mcp-tip-lbl {{
+    font-size: 0.67rem; font-weight: 700; letter-spacing: .1em;
+    text-transform: uppercase; color: #f7a84f; margin-bottom: 4px;
+}}
+.mcp-tip-txt {{ font-size: 0.87rem; color: #c0c8e0; line-height: 1.5; margin: 0; }}
+.mcp-footer {{
+    font-size: 0.77rem; color: #4a5270;
+    display: flex; gap: 18px; justify-content: center; flex-wrap: wrap;
+}}
+.mcp-elapsed {{ color: #6b7db0; font-weight: 600; }}
+</style>
+""", unsafe_allow_html=True)
+
+    st.markdown(f"""
+<div class="mcp-wrap">
+  <div class="mcp-ring"></div>
+  <div class="mcp-card">
+    <div class="mcp-icon">{icon}</div>
+    <p class="mcp-title">Claude Code is generating {label}</p>
+    <p class="mcp-sub">{subtitle}</p>
+    <div class="mcp-dots">{dots}</div>
+    <div class="mcp-bar-track">
+      <div style="height:100%;width:{bar_pct}%;background:linear-gradient(90deg,#4f8ef7,#7eb3ff);border-radius:2px;transition:width .1s"></div>
+    </div>
+    <div class="mcp-tip">
+      <div class="mcp-tip-lbl">{tip_icon} &nbsp; Did you know?</div>
+      <p class="mcp-tip-txt">{tip_text}</p>
+    </div>
+    <div class="mcp-footer">
+      <span class="mcp-elapsed">⏱ {elapsed_str}</span>
+      <span>Job <code style="color:#5570a8;font-size:.75rem">{job_id[:8]}…</code></span>
+      <span>Polling every 2s</span>
+    </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+    st.divider()
+    _, col_btn, _ = st.columns([1, 2, 1])
+    with col_btn:
+        if st.button("✕  Cancel — switch to Copy-Paste mode",
+                     key=f"mcp_cancel_{job_key}", use_container_width=True):
+            st.session_state[job_key]   = None
+            st.session_state[start_key] = None
+            st.session_state.ai_mode    = "copy_paste"
+            st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MCP POLLING HELPER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _mcp_submit_and_poll(
+    job_key: str,
+    start_key: str,
+    stage: str,
+    build_job: "Callable[[], tuple[dict, str]]",
+) -> dict | None:
+    """Submit a job if none is pending; poll until result arrives.
+
+    Args:
+        job_key   : session_state key for the job_id (e.g. "mcp_story_job")
+        start_key : session_state key for submission timestamp
+        stage     : pipeline stage string
+        build_job : zero-arg callable → (payload_dict, prompt_for_human_str)
+
+    Returns the raw done-file dict on success, None while waiting.
+    Polls every 3 s indefinitely — no hard timeout.
+    The Cancel button lets the user abort and switch to Copy-Paste mode.
+    """
+    job_id = st.session_state.get(job_key)
+
+    if job_id is None:
+        # First call — build and submit
+        payload, prompt = build_job()
+        p = proj()
+        job_id = write_pending_job(
+            stage=stage,
+            payload=payload,
+            prompt_for_human=prompt,
+            project_name=p.project_name if p else "",
+        )
+        st.session_state[job_key]   = job_id
+        st.session_state[start_key] = time.time()
+        st.rerun()
+        return None
+
+    # Job already submitted — poll for result
+    done = read_result(job_id)
+
+    if done is not None:
+        # Result ready — clear state and return
+        st.session_state[job_key]   = None
+        st.session_state[start_key] = None
+        st.toast("✅ Generated by Claude Code!")
+        return done
+
+    # Still waiting — return None.
+    # The main router renders the full-screen overlay and triggers the next poll.
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -178,6 +570,28 @@ with st.sidebar:
 def step_1():
     st.header("💡 Step 1 — Your Idea")
     st.caption("Describe what you want to make. One sentence is enough.")
+
+    # ── Reference media upload (before the form so files persist on rerun) ────
+    st.markdown("##### 📎 Reference images *(optional)*")
+    st.caption(
+        "Upload mood boards, style references, or inspiration images. "
+        "**MCP Auto:** the AI worker will view them directly. "
+        "**Copy-Paste:** images are shown with the prompt so you can attach them to your chatbot."
+    )
+    uploaded_media = st.file_uploader(
+        "Drop images here or click to browse",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+        key="step1_idea_media",
+        label_visibility="collapsed",
+    )
+    if uploaded_media:
+        cols = st.columns(min(5, len(uploaded_media)))
+        for i, uf in enumerate(uploaded_media):
+            with cols[i % 5]:
+                st.image(uf, caption=uf.name, use_container_width=True)
+
+    st.divider()
 
     with st.form("idea_form"):
         idea = st.text_area(
@@ -209,6 +623,17 @@ def step_1():
             duration_seconds=duration,
             mood=mood.strip() or None,
         )
+
+        # Save any uploaded reference images to disk
+        _files = st.session_state.get("step1_idea_media") or []
+        if _files:
+            media_dir = _APP_DIR / "media" / p.project_id / "idea"
+            media_dir.mkdir(parents=True, exist_ok=True)
+            for uf in _files:
+                dest = media_dir / uf.name
+                dest.write_bytes(uf.getvalue())
+                p.idea_media_paths.append(str(dest))
+
         set_proj(p)
         st.session_state.story_options = None
         p.next_step()       # → step 2
@@ -295,28 +720,178 @@ def step_2():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def step_3():
+    # Guard: if an MCP story job is in flight and not yet complete, render
+    # nothing — the router loading-screen intercept handles the overlay.
+    _sj = st.session_state.get("mcp_story_job")
+    if _sj is not None and read_result(_sj) is None:
+        return
+    _scroll_to_top()
     p = proj()
     st.header("📖 Step 3 — Story Options")
     st.caption(f"Idea: *{p.idea}*  ·  {p.expected_scene_count} scenes  ·  {p.duration_seconds}s")
 
-    # Generate options if not yet done
-    if st.session_state.story_options is None:
+    # Restore story options when navigating back (session_state cleared by reload / back-nav)
+    if st.session_state.story_options is None and p.story_options:
+        st.session_state.story_options = p.story_options
+
+    def _clear_story_state(_new_mode: str) -> None:
+        """Wipe stale story options + any in-flight MCP job when mode switches."""
+        st.session_state.story_options  = None
+        st.session_state.mcp_story_job  = None
+        st.session_state.mcp_story_start = None
+
+    mode = _render_mode_selector(on_change=_clear_story_state)
+    st.divider()
+
+    options: list[dict] | None = st.session_state.story_options
+
+    # ── Copy-paste path: show prompt + paste area ─────────────────────────────
+    if mode == "copy_paste" and options is None:
+        st.subheader("Step 1 — Copy this prompt into any chatbot")
+        _idea_media = [mp for mp in (p.idea_media_paths or []) if Path(mp).exists()]
+        prompt_text = build_story_prompt(
+            p.idea, p.expected_scene_count, p.mood, p.style_dna,
+            media_paths=_idea_media if _idea_media else None,
+        )
+        if _idea_media:
+            st.info(
+                "📎 **Reference images detected** — copy the prompt below, then attach "
+                "the images shown underneath to your chatbot message before sending."
+            )
+        else:
+            st.info(
+                "📋 Copy the prompt below → paste it into **Claude.ai**, **ChatGPT**, "
+                "**Gemini**, or any chatbot → copy the entire JSON response "
+                "→ paste it in **Step 2** below."
+            )
+        st.code(prompt_text, language=None)   # built-in copy button
+
+        # Show reference images the user should attach to the chatbot
+        if _idea_media:
+            st.markdown("**📎 Attach these images to your chatbot message:**")
+            img_cols = st.columns(min(4, len(_idea_media)))
+            for i, mp in enumerate(_idea_media):
+                with img_cols[i % 4]:
+                    st.image(mp, use_container_width=True, caption=Path(mp).name)
+
+        st.subheader("Step 2 — Paste the AI response")
+        raw = st.text_area(
+            "Paste the full AI response here",
+            height=220,
+            key="cp_story_paste",
+            placeholder=(
+                'Paste the chatbot\'s full response here.\n'
+                'It should contain a JSON block like:\n'
+                '{"stage": "story_options", "result": [...]}'
+            ),
+        )
+        col_parse, col_clear = st.columns([4, 1])
+        with col_parse:
+            if st.button("✅ Parse response →", type="primary", use_container_width=True,
+                         key="cp_story_parse_btn"):
+                raw_val = st.session_state.get("cp_story_paste", "").strip()
+                if not raw_val:
+                    st.error("Nothing pasted. Copy the AI response and paste it above.")
+                else:
+                    result = parse_story_response(raw_val)
+                    if result:
+                        st.session_state.story_options = result
+                        st.success(
+                            f"✅ Parsed {len(result)} story option(s)! "
+                            "Scroll down to select one."
+                        )
+                        st.rerun()
+                    else:
+                        st.error(parse_error_message(raw_val, "story"))
+        with col_clear:
+            if st.button("Clear", use_container_width=True, key="cp_story_clear_btn"):
+                st.session_state["cp_story_paste"] = ""
+                st.rerun()
+
+        st.divider()
+        if st.button("← Back", use_container_width=True, key="step3_back_cp"):
+            goto(2)
+        return   # Don't render story cards until a response is parsed
+
+    # ── MCP Auto path: submit job + poll ─────────────────────────────────────
+    if mode == "mcp" and options is None:
+        import dataclasses
+
+        def _build_story_job():
+            _media = [mp for mp in (p.idea_media_paths or []) if Path(mp).exists()]
+            prompt  = build_story_prompt(
+                p.idea, p.expected_scene_count, p.mood, p.style_dna,
+                media_paths=_media if _media else None,
+            )
+            payload = {
+                "idea":        p.idea,
+                "n_scenes":    p.expected_scene_count,
+                "mood":        p.mood,
+                "style_dna":   dataclasses.asdict(p.style_dna) if p.style_dna else None,
+                "media_paths": _media,
+            }
+            return payload, prompt
+
+        # Only submit if the user has explicitly clicked Generate — never auto-fire
+        if st.session_state.get("mcp_story_job") is None:
+            st.info(
+                "🤖 **MCP Auto mode** — Click **Generate** and Claude Code will "
+                f"create 3 distinct cinematic story treatments "
+                f"({p.expected_scene_count} scenes each) for your project."
+            )
+            col_gen, col_back = st.columns([3, 1])
+            with col_gen:
+                if st.button("🤖 Generate Story Options", type="primary",
+                             use_container_width=True, key="step3_mcp_generate"):
+                    _mcp_submit_and_poll("mcp_story_job", "mcp_story_start",
+                                        "story_options", _build_story_job)
+            with col_back:
+                if st.button("← Back", use_container_width=True, key="step3_back_mcp_pre"):
+                    goto(2)
+            return
+
+        done = _mcp_submit_and_poll("mcp_story_job", "mcp_story_start",
+                                    "story_options", _build_story_job)
+        if done is None:
+            # Still waiting (router shows full-screen overlay); stop rendering this step
+            if st.button("← Back", use_container_width=True, key="step3_back_mcp"):
+                goto(2)
+            return
+        # Got result — parse and store
+        raw_json = json.dumps({"stage": "story_options", "result": done["result"]})
+        parsed = parse_story_response(raw_json)
+        if parsed:
+            st.session_state.story_options = parsed
+            options = parsed
+        else:
+            st.error("Claude Code returned an unrecognised result format. Try Copy-Paste mode.")
+            st.session_state.ai_mode = "copy_paste"
+            st.rerun()
+            return
+
+    # ── Mechanical path: auto-generate on first visit ─────────────────────────
+    if options is None:
         with st.spinner("Generating story treatments…"):
             st.session_state.story_options = generate_story_options(
                 p.idea, p.duration_seconds, p.mood
             )
+        options = st.session_state.story_options
 
-    options: list[dict] = st.session_state.story_options
-
+    # ── Regenerate / new-prompt button ────────────────────────────────────────
     col_regen, _ = st.columns([1, 4])
     with col_regen:
-        if st.button("🔄 Regenerate all", use_container_width=True):
+        regen_label = (
+            "✂️ New AI prompt"   if mode == "copy_paste" else
+            "🤖 Re-generate"    if mode == "mcp"         else
+            "🔄 Regenerate all"
+        )
+        if st.button(regen_label, use_container_width=True, key="step3_regen"):
             st.session_state.story_options = None
             st.rerun()
 
     st.divider()
 
-    # ── Display 3 story cards ─────────────────────────────────────────────────
+    # ── Display story cards ───────────────────────────────────────────────────
     for i, opt in enumerate(options):
         with st.container(border=True):
             col_text, col_btn = st.columns([5, 1])
@@ -343,7 +918,7 @@ def step_3():
                     st.rerun()
 
     st.divider()
-    if st.button("← Back", use_container_width=True):
+    if st.button("← Back", use_container_width=True, key="step3_back"):
         goto(2)
 
 
@@ -351,14 +926,206 @@ def step_3():
 # STEP 4 — CHARACTER (UI step 3.5)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _scroll_to_top() -> None:
+    """Inject JavaScript to scroll the Streamlit page to the top."""
+    try:
+        import streamlit.components.v1 as _cv1
+        _cv1.html(
+            "<script>"
+            "window.parent.document.querySelector"
+            "('[data-testid=\"stAppViewContainer\"]')?.scrollTo(0,0);"
+            "window.parent.scrollTo(0,0);"
+            "</script>",
+            height=0,
+        )
+    except Exception:
+        pass
+
+
 def step_4():
+    # Guard: if an MCP character job is in flight and not yet complete, render
+    # nothing — the router loading-screen intercept handles the overlay.
+    _cj = st.session_state.get("mcp_char_job")
+    if _cj is not None and read_result(_cj) is None:
+        return
+    _scroll_to_top()
     p = proj()
     st.header("🧑 Step 3.5 — Character")
     st.caption("Lock the protagonist's visual description. It will be injected into every scene prompt.")
 
+    def _clear_char_state(_new_mode: str) -> None:
+        """Cancel any in-flight character MCP job when mode switches."""
+        st.session_state.mcp_char_job   = None
+        st.session_state.mcp_char_start = None
+        # Also clear the character from the project so the new mode's form shows
+        _p = proj()
+        if _p:
+            _p.character = None
+            save()
+
+    mode = _render_mode_selector(on_change=_clear_char_state)
+
+    # ── Character reference media (Copy-Paste and MCP modes only) ─────────────
+    if mode in ("copy_paste", "mcp"):
+        st.markdown("##### 📎 Character reference images *(optional)*")
+        st.caption(
+            "Upload photos or concept art of your protagonist. "
+            "**MCP Auto:** worker reads images directly. "
+            "**Copy-Paste:** displayed below the prompt so you can attach them to your chatbot."
+        )
+        char_uploaded = st.file_uploader(
+            "Drop images here or click to browse",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="step4_char_media",
+            label_visibility="collapsed",
+        )
+        if char_uploaded:
+            # Save files to disk and update project
+            media_dir = _APP_DIR / "media" / p.project_id / "character"
+            media_dir.mkdir(parents=True, exist_ok=True)
+            new_paths: list[str] = []
+            for uf in char_uploaded:
+                dest = media_dir / uf.name
+                dest.write_bytes(uf.getvalue())
+                new_paths.append(str(dest))
+            if sorted(new_paths) != sorted(p.character_media_paths or []):
+                p.character_media_paths = new_paths
+                save()
+            # Thumbnail strip
+            img_cols = st.columns(min(5, len(char_uploaded)))
+            for i, uf in enumerate(char_uploaded):
+                with img_cols[i % 5]:
+                    st.image(uf, caption=uf.name, use_container_width=True)
+
+    st.divider()
+
     story = p.selected_story
 
-    # Generate on first visit
+    # ── Copy-paste path: show prompt + paste area ─────────────────────────────
+    if mode == "copy_paste" and p.character is None:
+        st.subheader("Step 1 — Copy this prompt into any chatbot")
+        _char_media = [mp for mp in (p.character_media_paths or []) if Path(mp).exists()]
+        prompt_text = build_character_prompt(
+            p.idea, story, p.mood, p.style_dna,
+            has_image_hint=not bool(_char_media),   # generic hint only if no real files
+            media_paths=_char_media if _char_media else None,
+        )
+        if _char_media:
+            st.info(
+                "📎 **Character reference images detected** — copy the prompt below, "
+                "then attach the images shown underneath to your chatbot message."
+            )
+        else:
+            st.info(
+                "💡 **Tip:** You can attach a character reference image to your chatbot "
+                "message — the AI will describe what it sees.\n\n"
+                "Copy the prompt → paste into any chatbot (optionally with an image) "
+                "→ paste the JSON response in Step 2 below."
+            )
+        st.code(prompt_text, language=None)
+
+        # Show reference images to attach
+        if _char_media:
+            st.markdown("**📎 Attach these images to your chatbot message:**")
+            img_cols = st.columns(min(4, len(_char_media)))
+            for i, mp in enumerate(_char_media):
+                with img_cols[i % 4]:
+                    st.image(mp, use_container_width=True, caption=Path(mp).name)
+
+        st.subheader("Step 2 — Paste the AI response")
+        raw = st.text_area(
+            "Paste AI response here",
+            height=150,
+            key="cp_char_paste",
+            placeholder='{"stage": "character_description", "result": "30-year-old woman…"}',
+        )
+        col_parse, col_skip = st.columns([3, 2])
+        with col_parse:
+            if st.button("✅ Parse & Apply →", type="primary", use_container_width=True,
+                         key="cp_char_parse_btn"):
+                raw_val = st.session_state.get("cp_char_paste", "").strip()
+                if not raw_val:
+                    st.error("Nothing pasted.")
+                else:
+                    result = parse_character_response(raw_val)
+                    if result:
+                        p.character = Character.new(result, base_seed=p.global_seed)
+                        save()
+                        st.success("✅ Character description applied!")
+                        st.rerun()
+                    else:
+                        st.error(parse_error_message(raw_val, "character"))
+        with col_skip:
+            if st.button("⚙️ Use mechanical description instead",
+                         use_container_width=True, key="cp_char_skip_btn"):
+                with st.spinner("Generating protagonist description…"):
+                    desc = generate_character_description(p.idea, story or {}, p.mood)
+                p.character = Character.new(desc, base_seed=p.global_seed)
+                save()
+                st.rerun()
+
+        st.divider()
+        if st.button("← Back", use_container_width=True, key="step4_back_cp"):
+            goto(3)
+        return   # Wait until response parsed before showing edit UI
+
+    # ── MCP Auto path: submit job + poll ─────────────────────────────────────
+    if mode == "mcp" and p.character is None:
+        import dataclasses
+
+        def _build_char_job():
+            _media = [mp for mp in (p.character_media_paths or []) if Path(mp).exists()]
+            prompt  = build_character_prompt(
+                p.idea, story, p.mood, p.style_dna,
+                has_image_hint=False,
+                media_paths=_media if _media else None,
+            )
+            payload = {
+                "idea":        p.idea,
+                "mood":        p.mood,
+                "story":       story or {},
+                "style_dna":   dataclasses.asdict(p.style_dna) if p.style_dna else None,
+                "media_paths": _media,
+            }
+            return payload, prompt
+
+        # Only submit if the user has explicitly clicked Generate — never auto-fire
+        if st.session_state.get("mcp_char_job") is None:
+            st.info(
+                "🤖 **MCP Auto mode** — Click **Generate** and Claude Code will "
+                "write a precise visual description of your protagonist that will "
+                "be injected into every scene prompt."
+            )
+            col_gen, col_back = st.columns([3, 1])
+            with col_gen:
+                if st.button("🤖 Generate Character Description", type="primary",
+                             use_container_width=True, key="step4_mcp_generate"):
+                    _mcp_submit_and_poll("mcp_char_job", "mcp_char_start",
+                                        "character_description", _build_char_job)
+            with col_back:
+                if st.button("← Back", use_container_width=True, key="step4_back_mcp_pre"):
+                    goto(3)
+            return
+
+        done = _mcp_submit_and_poll("mcp_char_job", "mcp_char_start",
+                                    "character_description", _build_char_job)
+        if done is None:
+            if st.button("← Back", use_container_width=True, key="step4_back_mcp"):
+                goto(3)
+            return
+        raw_json = json.dumps({"stage": "character_description", "result": done["result"]})
+        desc = parse_character_response(raw_json)
+        if desc:
+            p.character = Character.new(desc, base_seed=p.global_seed)
+            save()
+        else:
+            st.error("Claude Code returned an unrecognised character format. Try Copy-Paste mode.")
+            st.session_state.ai_mode = "copy_paste"
+            st.rerun()
+            return
+
+    # ── Mechanical path: auto-generate on first visit ─────────────────────────
     if p.character is None:
         with st.spinner("Generating protagonist description…"):
             desc = generate_character_description(p.idea, story or {}, p.mood)
@@ -389,17 +1156,27 @@ def step_4():
             char.base_seed = int(new_seed)
             p.global_seed  = int(new_seed)
     with col_regen:
-        if st.button("🔄 Regenerate description", use_container_width=True):
-            with st.spinner("Regenerating…"):
-                desc = generate_character_description(p.idea, story or {}, p.mood)
-            char.description = desc
-            save()
-            st.rerun()
+        if mode in ("copy_paste", "mcp"):
+            label = "✂️ Re-prompt with AI" if mode == "copy_paste" else "🤖 Re-generate"
+            if st.button(label, use_container_width=True, key="char_reprompt_btn"):
+                p.character = None
+                # Clear any pending MCP job so a fresh one is submitted
+                st.session_state.mcp_char_job   = None
+                st.session_state.mcp_char_start = None
+                save()
+                st.rerun()
+        else:
+            if st.button("🔄 Regenerate description", use_container_width=True):
+                with st.spinner("Regenerating…"):
+                    desc = generate_character_description(p.idea, story or {}, p.mood)
+                char.description = desc
+                save()
+                st.rerun()
 
     st.divider()
     col_back, col_next = st.columns([1, 4])
     with col_back:
-        if st.button("← Back", use_container_width=True):
+        if st.button("← Back", use_container_width=True, key="step4_back"):
             goto(3)
     with col_next:
         if st.button("Accept character →", type="primary", use_container_width=True):
@@ -414,15 +1191,26 @@ def step_4():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def step_5():
+    # Guard: if an MCP scenes job is in flight and not yet complete, render
+    # nothing — the router loading-screen intercept handles the overlay.
+    _scj = st.session_state.get("mcp_scenes_job")
+    if _scj is not None and read_result(_scj) is None:
+        return
     p = proj()
     st.header("📋 Step 4 — Scene Breakdown")
 
+    def _clear_scene_state(_new_mode: str) -> None:
+        """Cancel any in-flight scene-prompts MCP job when mode switches."""
+        st.session_state.mcp_scenes_job   = None
+        st.session_state.mcp_scenes_start = None
+
+    mode     = _render_mode_selector(on_change=_clear_scene_state)
     dna      = p.style_dna
     skill    = SKILLS.get(dna.skill_id, SKILLS["cinematic"])
     cam_opts = [f"{i}  {v[:60]}" for i, v in enumerate(skill.camera_vocabulary)]
     lit_opts = [f"{i}  {v[:60]}" for i, v in enumerate(skill.lighting_vocabulary)]
 
-    # Generate scenes from story on first visit
+    # Generate scenes from story on first visit (mechanical always runs for structure)
     if not p.scenes:
         story = p.selected_story
         if story:
@@ -459,7 +1247,7 @@ def step_5():
             st.rerun()
 
     with col_reset:
-        if st.button("🔄 Regenerate all", use_container_width=True):
+        if st.button("🔄 Regenerate all", use_container_width=True, key="step5_regen_all"):
             story = p.selected_story
             if story:
                 with st.spinner("Rebuilding…"):
@@ -475,6 +1263,146 @@ def step_5():
     with col_dur:
         total_s = len(p.scenes) * 5
         st.metric("Total duration", f"{total_s}s", delta=f"{len(p.scenes)} scenes × 5s")
+
+    # ── MCP Auto: batch prompt enhancement ───────────────────────────────────
+    if mode == "mcp" and p.scenes:
+        import dataclasses
+
+        with st.expander("🤖 Enhance all prompts via MCP Auto", expanded=True):
+            st.info(
+                "Click **Enhance** to send all scenes to the MCP worker. "
+                "Claude Code will return optimised visual and video prompts automatically."
+            )
+            if st.button("🤖 Enhance all scenes →", type="primary",
+                         use_container_width=True, key="mcp_scenes_enhance"):
+                def _build_scenes_job():
+                    prompt  = build_scene_prompts_prompt(
+                        p.idea, p.selected_story, p.character, p.style_dna, p.scenes
+                    )
+                    import dataclasses as _dc
+                    payload = {
+                        "idea":      p.idea,
+                        "n_scenes":  len(p.scenes),
+                        "style_dna": _dc.asdict(p.style_dna) if p.style_dna else None,
+                        "character": p.character.description if p.character else "",
+                        "scenes": [
+                            {
+                                "scene_number": s.scene_number,
+                                "act":          s.act,
+                                "description":  s.description,
+                                "camera":       s.camera,
+                                "lighting":     s.lighting,
+                            }
+                            for s in p.scenes
+                        ],
+                    }
+                    return payload, prompt
+
+                done = _mcp_submit_and_poll("mcp_scenes_job", "mcp_scenes_start",
+                                            "scene_prompts", _build_scenes_job)
+                if done is not None:
+                    raw_json = json.dumps({"stage": "scene_prompts", "result": done["result"]})
+                    result = parse_scene_prompts_response(raw_json)
+                    if result and len(result["visual_prompts"]) == len(p.scenes):
+                        for scene, vp, mp in zip(p.scenes,
+                                                  result["visual_prompts"],
+                                                  result["video_prompts"]):
+                            scene.visual_prompt = vp
+                            scene.video_prompt  = mp
+                        save()
+                        st.success(f"✅ Updated prompts for all {len(p.scenes)} scenes!")
+                        st.rerun()
+                    else:
+                        st.error("Result count mismatch or parse error. Try again.")
+
+            # Show if a job is currently in flight (button pressed previously)
+            if st.session_state.get("mcp_scenes_job"):
+                job_id  = st.session_state.mcp_scenes_job
+                elapsed = time.time() - (st.session_state.get("mcp_scenes_start") or time.time())
+                done = read_result(job_id)
+                if done is not None:
+                    raw_json = json.dumps({"stage": "scene_prompts", "result": done["result"]})
+                    result = parse_scene_prompts_response(raw_json)
+                    st.session_state.mcp_scenes_job   = None
+                    st.session_state.mcp_scenes_start = None
+                    if result and len(result["visual_prompts"]) == len(p.scenes):
+                        for scene, vp, mp in zip(p.scenes,
+                                                  result["visual_prompts"],
+                                                  result["video_prompts"]):
+                            scene.visual_prompt = vp
+                            scene.video_prompt  = mp
+                        save()
+                        st.success(f"✅ Updated prompts for all {len(p.scenes)} scenes!")
+                        st.rerun()
+                    else:
+                        st.error("Result count mismatch or parse error.")
+                elif elapsed > _MCP_TIMEOUT_SECONDS:
+                    st.warning("⏰ Timed out. Try again or switch to Copy-Paste mode.")
+                    st.session_state.mcp_scenes_job   = None
+                    st.session_state.mcp_scenes_start = None
+                else:
+                    st.info(f"⏳ Waiting for Claude Code… ({elapsed:.0f}s)")
+                    time.sleep(3)
+                    st.rerun()
+
+    # ── Copy-paste: batch prompt enhancement ─────────────────────────────────
+    if mode == "copy_paste" and p.scenes:
+        st.divider()
+        with st.expander("✂️ Enhance all prompts with AI (copy-paste batch)", expanded=False):
+            st.info(
+                "The scene structure (act labels, camera, lighting) is already set above. "
+                "This generates **better visual and video prompts** by sending all scenes "
+                "to an AI in one go."
+            )
+            batch_prompt = build_scene_prompts_prompt(
+                p.idea, p.selected_story, p.character, p.style_dna, p.scenes
+            )
+            st.subheader("Copy this batch prompt")
+            st.code(batch_prompt, language=None)
+
+            st.subheader("Paste AI response")
+            raw_batch = st.text_area(
+                "Paste the full AI response here",
+                height=200,
+                key="cp_scenes_batch_paste",
+                placeholder=(
+                    '{"stage": "scene_prompts", "result": '
+                    '{"visual_prompts": [...], "video_prompts": [...]}}'
+                ),
+            )
+            col_pbatch, col_cbatch = st.columns([4, 1])
+            with col_pbatch:
+                if st.button("✅ Apply to all scenes →", type="primary",
+                             use_container_width=True, key="cp_scenes_batch_parse"):
+                    raw_val = st.session_state.get("cp_scenes_batch_paste", "").strip()
+                    if not raw_val:
+                        st.error("Nothing pasted.")
+                    else:
+                        result = parse_scene_prompts_response(raw_val)
+                        if result:
+                            vp = result["visual_prompts"]
+                            mp = result["video_prompts"]
+                            if len(vp) != len(p.scenes):
+                                st.error(
+                                    f"Response has {len(vp)} prompts but project has "
+                                    f"{len(p.scenes)} scenes. Ask the AI to regenerate "
+                                    "with the correct scene count."
+                                )
+                            else:
+                                for scene, v, m in zip(p.scenes, vp, mp):
+                                    scene.visual_prompt = v
+                                    scene.video_prompt  = m
+                                save()
+                                st.success(
+                                    f"✅ Updated prompts for all {len(p.scenes)} scenes!"
+                                )
+                                st.rerun()
+                        else:
+                            st.error(parse_error_message(raw_val, "scenes"))
+            with col_cbatch:
+                if st.button("Clear", use_container_width=True, key="cp_scenes_batch_clear"):
+                    st.session_state["cp_scenes_batch_paste"] = ""
+                    st.rerun()
 
     st.divider()
 
@@ -515,22 +1443,53 @@ def step_5():
             # Apply edits on any change
             cam_idx = int(chosen_cam.split("  ")[0])
             lit_idx = int(chosen_lit.split("  ")[0])
-            scene.act          = new_act
-            scene.description  = new_desc
-            scene.camera_index = cam_idx
+            scene.act            = new_act
+            scene.description    = new_desc
+            scene.camera_index   = cam_idx
             scene.lighting_index = lit_idx
-            scene.camera       = skill.camera_vocabulary[cam_idx]
-            scene.lighting     = skill.lighting_vocabulary[lit_idx]
-            scene.visual_prompt = new_prompt
+            scene.camera         = skill.camera_vocabulary[cam_idx]
+            scene.lighting       = skill.lighting_vocabulary[lit_idx]
+            scene.visual_prompt  = new_prompt
             if not scene.video_prompt or scene.video_prompt == scene.description:
                 scene.video_prompt = new_desc  # keep in sync until step 6
+
+            # ── Per-scene copy-paste re-prompt ────────────────────────────────
+            if mode == "copy_paste":
+                with st.expander(f"✂️ Re-prompt scene {scene.scene_number} with AI",
+                                 expanded=False):
+                    single_prompt = build_single_scene_prompt(
+                        p.idea, scene, p.character, p.style_dna
+                    )
+                    st.code(single_prompt, language=None)
+
+                    raw_single = st.text_area(
+                        "Paste AI response",
+                        height=120,
+                        key=f"cp_scene_paste_{i}",
+                        placeholder='{"stage": "scene_prompts", "result": {…}}',
+                    )
+                    if st.button("✅ Apply to this scene", key=f"cp_scene_apply_{i}",
+                                 type="primary", use_container_width=True):
+                        raw_val = st.session_state.get(f"cp_scene_paste_{i}", "").strip()
+                        if not raw_val:
+                            st.error("Nothing pasted.")
+                        else:
+                            result = parse_scene_prompts_response(raw_val)
+                            if result and result["visual_prompts"]:
+                                scene.visual_prompt = result["visual_prompts"][0]
+                                scene.video_prompt  = result["video_prompts"][0]
+                                save()
+                                st.success("✅ Scene prompts updated!")
+                                st.rerun()
+                            else:
+                                st.error(parse_error_message(raw_val, "scenes"))
 
     save()
 
     st.divider()
     col_back, col_next = st.columns([1, 4])
     with col_back:
-        if st.button("← Back", use_container_width=True):
+        if st.button("← Back", use_container_width=True, key="step5_back"):
             goto(4)
     with col_next:
         if st.button("Confirm scenes →", type="primary", use_container_width=True):
@@ -677,6 +1636,43 @@ def step_7():
     approved = p.approved_scene_count
     total    = p.scene_count
     st.progress(approved / max(total, 1), text=f"{approved}/{total} scenes approved")
+
+    # ── Bulk approve / unapprove ──────────────────────────────────────────────
+    _approvable = [
+        s for s in p.scenes
+        if not s.is_approved
+        and s.storyboard_images
+        and any(Path(img).exists() for img in s.storyboard_images)
+    ]
+    col_approve_all, col_unapprove_all, _ = st.columns([2, 2, 5])
+    with col_approve_all:
+        if st.button(
+            f"✅ Approve all ({len(_approvable)} remaining)",
+            type="primary",
+            use_container_width=True,
+            disabled=len(_approvable) == 0,
+            key="approve_all_btn",
+        ):
+            for s in _approvable:
+                # Pick the first image that exists on disk
+                first_img = next(img for img in s.storyboard_images if Path(img).exists())
+                p.update_scene(s.scene_id, approved_image_path=first_img, status="approved")
+            save()
+            st.rerun()
+    with col_unapprove_all:
+        if st.button(
+            "↩ Unapprove all",
+            use_container_width=True,
+            disabled=p.approved_scene_count == 0,
+            key="unapprove_all_btn",
+        ):
+            for s in p.scenes:
+                if s.is_approved:
+                    p.update_scene(s.scene_id, approved_image_path=None, status="reviewing")
+            save()
+            st.rerun()
+
+    st.divider()
 
     dna   = p.style_dna
     skill = SKILLS.get(dna.skill_id, SKILLS["cinematic"])
@@ -983,7 +1979,7 @@ def step_10():
     col_check, col_clear = st.columns([2, 1])
     with col_check:
         if st.button("🔍 Check models on server", use_container_width=True):
-            with st.spinner("Querying ComfyUI /object_info…"):
+            with st.spinner("Querying ComfyUI model folders…"):
                 try:
                     st.session_state.model_check_results = asyncio.run(
                         check_model_availability(client())
@@ -1026,7 +2022,9 @@ def step_10():
                     st.write(f"**Required for:** {info['required_for']}")
                 with col_b:
                     st.write(f"**Node available:** {'Yes' if info.get('node_available') else '❌ No'}")
-                    st.write(f"**File found:** {'Yes' if info.get('installed') else '❌ No'}")
+                    st.write(f"**File found:** {'✅ Yes' if info.get('installed') else '❌ No'}")
+                    if info.get("folder"):
+                        st.caption(f"Folder checked: `models/{info['folder']}/`")
                     if status != "ok":
                         st.markdown(f"**Download:** {info.get('download_url', '—')}")
                         wget = info.get("wget_cmd", "")
@@ -1191,7 +2189,7 @@ def step_12():
                 st.warning(f"Could not reach ComfyUI: {e}")
 
     # ── Overall progress ──────────────────────────────────────────────────────
-    done_scenes  = [s for s in p.scenes if s.status == "done" and s.video_path]
+    done_scenes  = [s for s in p.scenes if s.status == "done" and s.video_local_path]
     total        = p.scene_count
     n_done       = len(done_scenes)
 
@@ -1227,7 +2225,7 @@ def step_12():
 
         with col_actions:
             # Download if done and not yet saved locally
-            if live_status == "done" and not scene.video_path:
+            if live_status == "done" and not scene.video_local_path:
                 if st.button("⬇ Download", key=f"dl_{scene.scene_id}",
                              use_container_width=True):
                     with st.spinner(f"Downloading S{scene.scene_number}…"):
@@ -1236,7 +2234,7 @@ def step_12():
                                 download_completed_video(client(), scene, p)
                             )
                             if vid_path:
-                                scene.video_path = str(vid_path)
+                                scene.video_local_path = str(vid_path)
                                 scene.set_status("done")
                                 save()
                                 st.rerun()
@@ -1245,7 +2243,7 @@ def step_12():
                         except Exception as e:
                             st.error(f"Download failed: {e}")
 
-            elif scene.video_path and Path(scene.video_path).exists():
+            elif scene.video_local_path and Path(scene.video_local_path).exists():
                 st.write("✅ saved")
 
             # Retry failed scenes
@@ -1261,7 +2259,7 @@ def step_12():
     with col_dl:
         downloadable = [
             s for s in p.scenes
-            if statuses.get(s.scene_id, s.status) == "done" and not s.video_path
+            if statuses.get(s.scene_id, s.status) == "done" and not s.video_local_path
         ]
         if downloadable:
             if st.button(f"⬇ Download all {len(downloadable)} ready clips",
@@ -1275,7 +2273,7 @@ def step_12():
                             download_completed_video(client(), scene, p)
                         )
                         if vid_path:
-                            scene.video_path = str(vid_path)
+                            scene.video_local_path = str(vid_path)
                             scene.set_status("done")
                     except Exception:
                         pass
@@ -1294,7 +2292,7 @@ def step_12():
         if st.button("← Back to Queue", use_container_width=True):
             goto(11)
     with col_next:
-        any_done = any(s.video_path and Path(s.video_path).exists() for s in p.scenes)
+        any_done = any(s.video_local_path and Path(s.video_local_path).exists() for s in p.scenes)
         if st.button("Playback & Export →", type="primary", use_container_width=True,
                      disabled=not any_done):
             p.next_step()   # → step 13 (playback)
@@ -1316,8 +2314,8 @@ def step_13():
     # ── Per-scene video players ───────────────────────────────────────────────
     st.subheader("Scene clips")
 
-    ready_scenes    = [s for s in p.scenes if s.video_path and Path(s.video_path).exists()]
-    missing_scenes  = [s for s in p.scenes if not s.video_path or not Path(s.video_path).exists()]
+    ready_scenes    = [s for s in p.scenes if s.video_local_path and Path(s.video_local_path).exists()]
+    missing_scenes  = [s for s in p.scenes if not s.video_local_path or not Path(s.video_local_path).exists()]
 
     if missing_scenes:
         st.warning(
@@ -1333,7 +2331,7 @@ def step_13():
             cols = st.columns(n_cols)
             for col, scene in zip(cols, row):
                 with col:
-                    st.video(scene.video_path)
+                    st.video(scene.video_local_path)
                     st.caption(
                         f"**S{scene.scene_number}** `{scene.act}`  \n"
                         f"{scene.description[:60]}"
@@ -1392,7 +2390,7 @@ def step_13():
 
         if st.button("🎬 Compile montage", type="primary",
                      use_container_width=True, disabled=len(ready_scenes) < 2):
-            video_paths = [Path(s.video_path) for s in ready_scenes]
+            video_paths = [Path(s.video_local_path) for s in ready_scenes]
             with st.spinner(
                 f"Compiling {len(video_paths)} clips with {transition} transitions…  "
                 "(this may take a minute)"
@@ -1471,5 +2469,37 @@ STEP_FN = {
     13: step_13,
 }
 
-fn = STEP_FN.get(step, step_1)
-fn()
+# ── MCP loading intercept ──────────────────────────────────────────────────
+# Check for any active MCP job BEFORE rendering the step.  If a job is in
+# flight and the result isn't ready yet, render the full-screen overlay and
+# re-poll every 3 s.  When the result arrives, fall through to the normal
+# step render so _mcp_submit_and_poll() can consume and clear the result.
+_MCP_JOB_SLOTS = [
+    ("mcp_story_job",  "mcp_story_start",  "story_options"),
+    ("mcp_char_job",   "mcp_char_start",   "character_description"),
+    ("mcp_scenes_job", "mcp_scenes_start", "scene_prompts"),
+]
+_active_slot = None
+for _jk, _sk, _stage in _MCP_JOB_SLOTS:
+    if st.session_state.get(_jk):
+        _active_slot = (_jk, _sk, _stage)
+        break
+
+if _active_slot:
+    _jk, _sk, _stage = _active_slot
+    _job_id = st.session_state[_jk]
+    _done   = read_result(_job_id)
+
+    if _done is None:
+        # Still waiting — render full-screen overlay, sleep, rerun
+        _elapsed = time.time() - (st.session_state.get(_sk) or time.time())
+        _render_mcp_loading_screen(_stage, _elapsed, _job_id, _jk, _sk)
+        time.sleep(2)
+        st.rerun()
+    else:
+        # Result ready — let the step function consume it normally
+        fn = STEP_FN.get(step, step_1)
+        fn()
+else:
+    fn = STEP_FN.get(step, step_1)
+    fn()

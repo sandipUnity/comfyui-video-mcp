@@ -39,6 +39,130 @@ from pipeline.scene_state import SceneState, _scene_seed
 from skills_engine import SKILLS, build_comfyui_positive, build_comfyui_negative, build_comfyui_video_prompt
 
 
+# ── Shot-size assignment ──────────────────────────────────────────────────────
+#
+# Maps act labels → cinematographic shot size.
+# Wide shots for world-building / resolution; close-ups for emotional peak.
+# Paired with an explicit character-placement note so image models don't
+# default to centred medium portraits for every scene.
+
+_SHOT_SIZE_BY_ACT: dict[str, str] = {
+    # Establishing / world acts → very wide
+    "HOOK":           "EXTREME WIDE SHOT",
+    "BEFORE":         "EXTREME WIDE SHOT",
+    "ORDINARY":       "WIDE SHOT",
+    "ORDINARY1":      "WIDE SHOT",
+    "ORDINARY2":      "WIDE SHOT",
+    "AFTER":          "WIDE SHOT",
+    "CODA":           "WIDE SHOT",
+    "RESOLUTION":     "WIDE SHOT",
+    "REBORN":         "WIDE SHOT",
+    "SETUP":          "WIDE SHOT",
+    "DEPARTURE":      "WIDE SHOT",
+    "JOURNEY":        "WIDE SHOT",
+    # Transitional / momentum acts → medium wide / medium
+    "INCITING":       "MEDIUM WIDE SHOT",
+    "CATALYST":       "MEDIUM WIDE SHOT",
+    "REGROUPING":     "MEDIUM WIDE SHOT",
+    "BUILD":          "MEDIUM SHOT",
+    "BUILD1":         "MEDIUM SHOT",
+    "BUILD2":         "MEDIUM SHOT",
+    "BUILD3":         "MEDIUM SHOT",
+    "MIDPOINT":       "MEDIUM SHOT",
+    "CHANGE":         "MEDIUM SHOT",
+    "CHANGE1":        "MEDIUM SHOT",
+    "CHANGE2":        "MEDIUM SHOT",
+    "TEST":           "MEDIUM SHOT",
+    "TEST1":          "MEDIUM SHOT",
+    "TEST2":          "MEDIUM SHOT",
+    "SETBACK":        "MEDIUM SHOT",
+    "CHALLENGE":      "MEDIUM SHOT",
+    # Emotional peak acts → close
+    "CONFRONTATION":  "MEDIUM CLOSE-UP",
+    "WONDER":         "WIDE SHOT",          # wonder = environment dominant
+    "FIRST LIGHT":    "WIDE SHOT",          # light reveal = go wide
+    "FIRST SIGHT":    "WIDE SHOT",
+    "REVELATION":     "MEDIUM CLOSE-UP",
+    "DISCOVERY":      "MEDIUM CLOSE-UP",
+    "INSCRIPTION":    "MEDIUM CLOSE-UP",
+    "TWIST":          "MEDIUM CLOSE-UP",
+    "DOUBT":          "CLOSE-UP",
+    "DECISION":       "MEDIUM CLOSE-UP",
+    "RECKONING":      "MEDIUM CLOSE-UP",
+    "CRISIS":         "CLOSE-UP",
+    "SACRIFICE":      "MEDIUM SHOT",
+    "CLIMAX":         "CLOSE-UP",
+    "VICTORY":        "WIDE SHOT",          # triumphant wide
+}
+
+# Character placement note per shot size — appended to every visual prompt
+_PLACEMENT_BY_SHOT: dict[str, str] = {
+    "EXTREME WIDE SHOT":   "subject is a tiny figure in the landscape, occupying less than 10% of frame height, positioned at lower-center or off-center",
+    "WIDE SHOT":           "full body visible, character occupies lower third of frame, environment dominates upper two-thirds",
+    "MEDIUM WIDE SHOT":    "character from knees up, positioned at rule-of-thirds left or right, background clearly visible",
+    "MEDIUM SHOT":         "waist-up framing, character slightly off-center, background in soft focus",
+    "MEDIUM CLOSE-UP":     "chest-and-face framing, face occupies upper half of frame, shallow depth of field f/2.0",
+    "CLOSE-UP":            "face fills the frame, extreme shallow depth of field f/1.4, background fully bokeh",
+}
+
+
+def _assign_shot_size(act: str, scene_idx: int, total: int) -> str:
+    """Return the appropriate shot size for this scene.
+
+    Priority:
+      1. Act-label lookup (narrative intent)
+      2. Position fallback: first and last scenes → wide; middle → vary by thirds
+    """
+    act_key = act.upper().strip()
+    if act_key in _SHOT_SIZE_BY_ACT:
+        shot = _SHOT_SIZE_BY_ACT[act_key]
+    else:
+        # Position-based fallback
+        progress = scene_idx / max(total - 1, 1)
+        if progress < 0.15 or progress > 0.85:
+            shot = "WIDE SHOT"
+        elif progress < 0.35 or progress > 0.65:
+            shot = "MEDIUM WIDE SHOT"
+        elif 0.45 < progress < 0.55:
+            shot = "CLOSE-UP"
+        else:
+            shot = "MEDIUM SHOT"
+
+    # Force variety: every 4th scene that would be MEDIUM SHOT → WIDE SHOT
+    # so we never get 4 consecutive medium portraits
+    if shot == "MEDIUM SHOT" and scene_idx % 4 == 3:
+        shot = "WIDE SHOT"
+
+    return shot
+
+
+def _build_visual_prompt_with_framing(
+    shot_size: str,
+    scene_desc: str,
+    camera: str,
+    lighting: str,
+    character_prefix: str,
+    skill,
+) -> str:
+    """Build a mechanical visual prompt that leads with shot size + placement.
+
+    Structure:  [SHOT SIZE]. [Placement note]. [Scene content]. [Camera]. [Lighting].
+                [Character — after environment]. [Quality boosters].
+    """
+    placement = _PLACEMENT_BY_SHOT.get(shot_size, "")
+    placement_clause = f" {placement}." if placement else ""
+
+    # Scene environment goes BEFORE character
+    if character_prefix:
+        char_clean = character_prefix.rstrip(", ")
+        core = f"{scene_desc}, {camera}, {lighting}, {char_clean}"
+    else:
+        core = f"{scene_desc}, {camera}, {lighting}"
+
+    base = f"{shot_size}.{placement_clause} {core}"
+    return build_comfyui_positive(base, skill)
+
+
 # ── Act label sets per template per scene count ───────────────────────────────
 
 _ACTS: dict[str, dict[int, list[str]]] = {
@@ -315,28 +439,31 @@ def _claude_visual_prompts_batch(
         n = len(scenes)
 
         scenes_text = "\n".join(
-            f"{i+1}. Act: {s['act']}\n"
+            f"{i+1}. Act: {s['act']} | Shot: {s.get('shot_size', 'MEDIUM SHOT')}\n"
+            f"   Placement: {_PLACEMENT_BY_SHOT.get(s.get('shot_size','MEDIUM SHOT'), '')}\n"
             f"   Scene: {s['description']}\n"
             f"   Camera: {s['camera']}\n"
             f"   Lighting: {s['lighting']}"
             for i, s in enumerate(scenes)
         )
-        char_line = f'Character in every scene: "{character_desc}"' if character_desc else ""
+        char_line = f'Character (appears AFTER environment in every prompt): "{character_desc}"' if character_desc else ""
 
         user_msg = (
             f"Generate exactly {n} ComfyUI positive image-generation prompts "
             f"for a video project.\n\n"
             f'Project idea: "{idea}"\n'
             f"{char_line}\n\n"
-            "Rules:\n"
-            "- START each prompt with the scene action/setting — NOT the character description\n"
-            "- Include the exact camera move and lighting as specified\n"
-            "- Weave the character description in AFTER the scene-specific content\n"
-            "- Apply your cinematographic expertise from the system prompt\n"
-            "- Append quality-boosters and style tags at the very end\n"
-            "- Each prompt must be under 150 words, single paragraph, no line breaks\n"
-            "- Every prompt must be VISUALLY DISTINCT — different opening words each time\n"
-            "- Output ONLY a JSON array of strings — no markdown, no labels\n\n"
+            "CRITICAL RULES — read every line:\n"
+            "1. BEGIN each prompt with the SHOT SIZE (e.g. 'EXTREME WIDE SHOT.', 'CLOSE-UP.') — exactly as specified\n"
+            "2. IMMEDIATELY follow with the PLACEMENT note for that shot — character position in frame\n"
+            "3. Then describe the ENVIRONMENT and SCENE ACTION\n"
+            "4. Weave the CHARACTER description in AFTER the environment — never first\n"
+            "5. Include the exact camera move and lighting as specified\n"
+            "6. Append quality-boosters and style tags at the very end\n"
+            "7. Each prompt: under 150 words, single paragraph, no line breaks\n"
+            "8. Every prompt MUST open with a DIFFERENT shot size — variety is mandatory\n"
+            "9. NEVER produce a medium portrait of a centred character — use the placement note\n"
+            "10. Output ONLY a JSON array of strings — no markdown, no labels\n\n"
             f"Scenes:\n{scenes_text}\n\n"
             f"Return a JSON array of exactly {n} strings."
         )
@@ -510,16 +637,14 @@ def generate_scenes_from_story(
         cam      = skill.camera_vocabulary[cam_idx]
         lite     = skill.lighting_vocabulary[lite_idx]
 
-        # Mechanical prompts — used as fallback if Claude is unavailable.
-        # Scene-specific content goes FIRST so each prompt is visibly
-        # distinct in the Step 5 text areas.  Character description follows
-        # (still included for consistency; Flux handles this ordering fine).
-        scene_core = f"{desc}, {cam}, {lite}"
-        base = (
-            f"{scene_core}, {character_prefix.rstrip(', ')}"
-            if character_prefix else scene_core
+        # Assign narrative-aware shot size (wide/medium/close based on act + position)
+        shot_size = _assign_shot_size(act, i, n)
+
+        # Mechanical visual prompt — leads with shot size + placement directive
+        # so the model frames correctly even without Claude.
+        visual_prompt   = _build_visual_prompt_with_framing(
+            shot_size, desc, cam, lite, character_prefix, skill
         )
-        visual_prompt   = build_comfyui_positive(base, skill)
         negative_prompt = build_comfyui_negative(skill)
         video_prompt    = build_comfyui_video_prompt(
             f"{desc}, {character_prefix.rstrip(', ')}" if character_prefix else desc,
@@ -528,6 +653,7 @@ def generate_scenes_from_story(
 
         scene_inputs.append({
             "act": act, "description": desc, "camera": cam, "lighting": lite,
+            "shot_size": shot_size,
         })
         scenes.append(SceneState(
             scene_id        = f"scene_{i+1:02d}",
@@ -543,6 +669,7 @@ def generate_scenes_from_story(
             visual_prompt   = visual_prompt,
             negative_prompt = negative_prompt,
             video_prompt    = video_prompt,
+            shot_size       = shot_size,
             seed            = _scene_seed(global_seed, i + 1),
             status          = "pending",
         ))

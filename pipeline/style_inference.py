@@ -107,8 +107,8 @@ class StyleDNA:
             quality_boosters  = list(data.get("quality_boosters", [])),
             negative_tags     = list(data.get("negative_tags", [])),
             fps               = data.get("fps", 24),
-            recommended_width = data.get("recommended_width", 768),
-            recommended_height= data.get("recommended_height", 512),
+            recommended_width = data.get("recommended_width", 1920),
+            recommended_height= data.get("recommended_height", 1080),
         )
 
     def __repr__(self) -> str:

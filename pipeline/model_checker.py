@@ -1,6 +1,6 @@
 """
-Model availability checker — queries ComfyUI /object_info to verify
-that every required model file is installed on the server.
+Model availability checker — queries ComfyUI /models/{folder} and /object_info
+to verify that every required model file is installed on the server.
 
 Usage:
     from pipeline.model_checker import check_model_availability, REQUIRED_MODELS
@@ -15,12 +15,16 @@ Result dict per model key:
         "filename":        "ltx-2.3-22b-dev-fp8.safetensors",
         "node_class":      "CheckpointLoaderSimple",
         "node_available":  True,   # False if custom node package not installed
-        "installed":       True,   # False if model file not found in options
+        "installed":       True,   # False if model file not found
         "status":          "ok",   # "ok" | "missing_file" | "missing_node" | "unknown"
         "download_url":    "https://...",
         "size_gb":         22.0,
         "required_for":    "I2V generation",
     }
+
+Detection strategy (in order):
+    1. GET /models/{folder}  — direct file listing per model subfolder (primary)
+    2. GET /object_info      — parse node input options (fallback)
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ REQUIRED_MODELS: dict[str, dict] = {
         "filename":     "flux1-schnell-fp8.safetensors",
         "node_class":   "CheckpointLoaderSimple",
         "field":        "ckpt_name",
+        "folder":       "checkpoints",
         "download_url": "https://huggingface.co/black-forest-labs/FLUX.1-schnell",
         "wget_cmd":     "wget -P ComfyUI/models/checkpoints/ https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors",
         "size_gb":      8.0,
@@ -48,6 +53,7 @@ REQUIRED_MODELS: dict[str, dict] = {
         "filename":     "ltx-2.3-22b-dev-fp8.safetensors",
         "node_class":   "CheckpointLoaderSimple",
         "field":        "ckpt_name",
+        "folder":       "checkpoints",
         "download_url": "https://huggingface.co/Lightricks/LTX-Video",
         "wget_cmd":     "wget -P ComfyUI/models/checkpoints/ https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltx-video-2b-v0.9.5.safetensors",
         "size_gb":      22.0,
@@ -59,6 +65,7 @@ REQUIRED_MODELS: dict[str, dict] = {
         "filename":     "ltx-2.3-22b-distilled-lora-384.safetensors",
         "node_class":   "LoraLoaderModelOnly",
         "field":        "lora_name",
+        "folder":       "loras",
         "download_url": "https://huggingface.co/Lightricks/LTX-Video",
         "wget_cmd":     "wget -P ComfyUI/models/loras/ <URL>",
         "size_gb":      1.5,
@@ -68,8 +75,9 @@ REQUIRED_MODELS: dict[str, dict] = {
     "ltx_upscaler": {
         "display_name": "LTX Spatial Upscaler x2  (high-res refinement)",
         "filename":     "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
-        "node_class":   "LatentUpscaleModelLoader",
+        "node_class":   "UpscaleModelLoader",
         "field":        "model_name",
+        "folder":       "upscale_models",
         "download_url": "https://huggingface.co/Lightricks/LTX-Video",
         "wget_cmd":     "wget -P ComfyUI/models/upscale_models/ <URL>",
         "size_gb":      0.5,
@@ -81,6 +89,9 @@ REQUIRED_MODELS: dict[str, dict] = {
         "filename":     "gemma_3_12B_it_fp4_mixed.safetensors",
         "node_class":   "LTXAVTextEncoderLoader",
         "field":        "text_encoder",
+        "field_aliases": ["text_encoder_name", "model_name", "ckpt_name",
+                          "encoder", "text_encoder_path"],
+        "folder":       "text_encoders",
         "download_url": "https://huggingface.co/Lightricks/LTX-Video",
         "wget_cmd":     "wget -P ComfyUI/models/text_encoders/ <URL>",
         "size_gb":      7.0,
@@ -93,31 +104,59 @@ REQUIRED_MODELS: dict[str, dict] = {
 # ── Main check function ────────────────────────────────────────────────────────
 
 async def check_model_availability(client) -> dict[str, dict]:
-    """Query ComfyUI /object_info and check all required model files.
+    """Query ComfyUI and check all required model files.
+
+    Primary:  GET /models/{folder}  — direct file listing per subfolder
+    Fallback: GET /object_info      — parse node input option lists
 
     Returns a dict keyed by model key (same keys as REQUIRED_MODELS).
     Each value has all REQUIRED_MODELS fields plus:
         status: "ok" | "missing_file" | "missing_node" | "unknown"
     """
-    object_info = await _fetch_object_info(client)
-    if object_info is None:
-        return {k: {**v, "node_available": False,
-                    "installed": False, "status": "unknown"}
-                for k, v in REQUIRED_MODELS.items()}
+    # Fetch both data sources concurrently
+    import asyncio
+    object_info_task = asyncio.create_task(_fetch_object_info(client))
+
+    # Collect unique folders needed
+    folders_needed = {spec["folder"] for spec in REQUIRED_MODELS.values() if "folder" in spec}
+    folder_tasks = {
+        folder: asyncio.create_task(_fetch_model_folder(client, folder))
+        for folder in folders_needed
+    }
+
+    object_info = await object_info_task
+    folder_files: dict[str, list[str]] = {}
+    for folder, task in folder_tasks.items():
+        result = await task
+        if result is not None:
+            folder_files[folder] = result
 
     results: dict[str, dict] = {}
     for key, spec in REQUIRED_MODELS.items():
-        node_class    = spec["node_class"]
-        field         = spec["field"]
-        filename      = spec["filename"]
-        node_available = node_class in object_info
-        installed      = False
+        node_class = spec["node_class"]
+        filename   = spec["filename"]
+        folder     = spec.get("folder")
 
-        if node_available:
-            # ComfyUI input schema: object_info[NodeClass]["input"]["required"|"optional"][field][0]
-            # where [0] is the list of available option strings.
-            installed = _check_field(object_info[node_class], field, filename)
+        # ── Node availability (from object_info) ──────────────────────────────
+        if object_info is None:
+            node_available = False
+        else:
+            node_available = node_class in object_info
 
+        # ── File detection ────────────────────────────────────────────────────
+        installed = False
+
+        # Strategy 1: direct /models/{folder} listing (primary — most reliable)
+        if folder and folder in folder_files:
+            installed = _file_in_list(filename, folder_files[folder])
+
+        # Strategy 2: object_info field parsing (fallback)
+        if not installed and node_available and object_info:
+            field   = spec["field"]
+            aliases = [field] + list(spec.get("field_aliases", []))
+            installed = _check_field(object_info[node_class], aliases, filename)
+
+        # ── Status ────────────────────────────────────────────────────────────
         if not node_available:
             status = "missing_node"
         elif not installed:
@@ -153,9 +192,10 @@ def all_t2i_models_ok(results: dict[str, dict]) -> bool:
     )
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── API helpers ───────────────────────────────────────────────────────────────
 
 async def _fetch_object_info(client) -> dict | None:
+    """GET /object_info — full node schema."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -169,15 +209,96 @@ async def _fetch_object_info(client) -> dict | None:
         return None
 
 
-def _check_field(node_def: dict, field: str, target: str) -> bool:
-    """Return True if *target* appears in node_def's input options for *field*."""
+async def _fetch_model_folder(client, folder_name: str) -> list[str] | None:
+    """GET /models/{folder_name} — list of filenames in that model subfolder.
+
+    ComfyUI returns a JSON list of filename strings, e.g.:
+        ["model_a.safetensors", "subdir/model_b.safetensors"]
+
+    Returns None if the endpoint is unavailable or returns an error.
+    """
     try:
-        for section in ("required", "optional"):
-            field_spec = node_def.get("input", {}).get(section, {}).get(field)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{client.base_url}/models/{folder_name}",
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                if isinstance(data, list):
+                    return [str(f) for f in data]
+                return None
+    except Exception:
+        return None
+
+
+# ── File-matching helpers ─────────────────────────────────────────────────────
+
+def _file_in_list(filename: str, file_list: list[str]) -> bool:
+    """Return True if *filename* matches any entry in *file_list*.
+
+    Matching is case-insensitive and ignores leading path components so that
+    entries like "subdir/model.safetensors" match the bare "model.safetensors".
+    Also tries stripping the .safetensors extension in case ComfyUI omits it.
+    """
+    target       = filename.lower()
+    target_stem  = target.rsplit(".", 1)[0]   # without extension
+
+    for entry in file_list:
+        entry_lower = entry.lower()
+        entry_base  = entry_lower.replace("\\", "/").rsplit("/", 1)[-1]  # basename only
+        entry_stem  = entry_base.rsplit(".", 1)[0]
+
+        if entry_lower == target:        # exact match (full path)
+            return True
+        if entry_base  == target:        # basename exact
+            return True
+        if entry_stem  == target_stem:   # basename without extension
+            return True
+
+    return False
+
+
+def _check_field(node_def: dict, fields: list[str], target: str) -> bool:
+    """Return True if *target* appears in node_def's input options.
+
+    Search strategy (stops as soon as a match is found):
+    1. Try each field name in *fields* for an exact match.
+    2. Try each field name in *fields* case-insensitively.
+    3. Search ALL input fields of the node for the filename (catches renamed fields).
+    4. Search ALL fields case-insensitively (last resort).
+    """
+    target_lower = target.lower()
+    try:
+        inputs = node_def.get("input", {})
+        all_sections = {
+            **inputs.get("required", {}),
+            **inputs.get("optional", {}),
+        }
+
+        def _options(field_spec) -> list:
             if field_spec and isinstance(field_spec, (list, tuple)):
-                options = field_spec[0]
-                if isinstance(options, list) and target in options:
-                    return True
+                opts = field_spec[0]
+                if isinstance(opts, list):
+                    return opts
+            return []
+
+        # Pass 1 & 2 — named fields (exact then case-insensitive)
+        for fname in fields:
+            opts = _options(all_sections.get(fname))
+            if target in opts:
+                return True
+            if any(o.lower() == target_lower for o in opts):
+                return True
+
+        # Pass 3 & 4 — scan every field in the node
+        for opts in [_options(v) for v in all_sections.values()]:
+            if target in opts:
+                return True
+            if any(o.lower() == target_lower for o in opts):
+                return True
+
     except Exception:
         pass
     return False

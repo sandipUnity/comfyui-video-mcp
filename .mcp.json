@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pipeline": {
+      "command": "venv/Scripts/python.exe",
+      "args": ["pipeline/mcp_server.py"],
+      "description": "AI Video Pipeline job queue — story, character, and scene prompt generation"
+    }
+  }
+}

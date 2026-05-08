@@ -66,22 +66,26 @@ class ProjectState:
     character:   Optional[Character] = None
     global_seed: int = field(default_factory=lambda: random.randint(0, 2**31 - 1))
 
+    # ── Media uploads (idea & character reference images) ────────────────────────
+    idea_media_paths:      list[str] = field(default_factory=list)
+    character_media_paths: list[str] = field(default_factory=list)
+
     # ── Step 4-6 — Scenes ───────────────────────────────────────────────────────
     scenes: list[SceneState] = field(default_factory=list)
 
     # ── Step 7 — Technical config ────────────────────────────────────────────────
     workflow_t2i:    str = DEFAULT_T2I_WORKFLOW
     workflow_i2v:    str = DEFAULT_I2V_WORKFLOW
-    width:           int = 1280
-    height:          int = 720
+    width:           int = 1920
+    height:          int = 1080
     frames:          int = 121
     fps:             int = 25
-    t2i_width:       int = 1024    # T2I uses square by default
-    t2i_height:      int = 1024
+    t2i_width:       int = 1920    # T2I storyboard resolution
+    t2i_height:      int = 1080
     images_per_scene: int = 1      # 1-5
 
     # ── Navigation ──────────────────────────────────────────────────────────────
-    current_step: int = 1           # 1-10
+    current_step: int = 1           # 1-13
 
     # ── Output ──────────────────────────────────────────────────────────────────
     output_dir: str = ""            # set at creation: "output/{project_id}/"
@@ -164,13 +168,13 @@ class ProjectState:
     # ── Navigation ───────────────────────────────────────────────────────────────
 
     def next_step(self) -> int:
-        """Advance current_step by 1 (max 10). Returns new step number."""
-        self.current_step = min(self.current_step + 1, 10)
+        """Advance current_step by 1 (max 13). Returns new step number."""
+        self.current_step = min(self.current_step + 1, 13)
         return self.current_step
 
     def goto_step(self, step: int) -> None:
-        if not 1 <= step <= 10:
-            raise ValueError(f"Step must be 1-10, got {step}")
+        if not 1 <= step <= 13:
+            raise ValueError(f"Step must be 1-13, got {step}")
         self.current_step = step
 
     # ── Derived properties ────────────────────────────────────────────────────────
@@ -224,6 +228,8 @@ class ProjectState:
             "selected_story_index": self.selected_story_index,
             "character":            self.character.to_dict() if self.character else None,
             "global_seed":          self.global_seed,
+            "idea_media_paths":     list(self.idea_media_paths),
+            "character_media_paths":list(self.character_media_paths),
             "scenes":               [s.to_dict() for s in self.scenes],
             "workflow_t2i":         self.workflow_t2i,
             "workflow_i2v":         self.workflow_i2v,
@@ -257,15 +263,17 @@ class ProjectState:
             selected_story_index = data.get("selected_story_index"),
             character            = character,
             global_seed          = data.get("global_seed", random.randint(0, 2**31 - 1)),
+            idea_media_paths     = list(data.get("idea_media_paths", [])),
+            character_media_paths= list(data.get("character_media_paths", [])),
             scenes               = scenes,
             workflow_t2i         = data.get("workflow_t2i", DEFAULT_T2I_WORKFLOW),
             workflow_i2v         = data.get("workflow_i2v", DEFAULT_I2V_WORKFLOW),
-            width                = data.get("width",  1280),
-            height               = data.get("height", 720),
+            width                = data.get("width",  1920),
+            height               = data.get("height", 1080),
             frames               = data.get("frames", 121),
             fps                  = data.get("fps",    25),
-            t2i_width            = data.get("t2i_width",  1024),
-            t2i_height           = data.get("t2i_height", 1024),
+            t2i_width            = data.get("t2i_width",  1920),
+            t2i_height           = data.get("t2i_height", 1080),
             images_per_scene     = data.get("images_per_scene", 1),
             current_step         = data.get("current_step", 1),
             output_dir           = data.get("output_dir", ""),

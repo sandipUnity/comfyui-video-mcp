@@ -60,6 +60,7 @@ class SceneState:
     visual_prompt:   str = ""   # full positive prompt after skill injection
     negative_prompt: str = ""   # full negative prompt after skill injection
     video_prompt:    str = ""   # motion-focused prompt for I2V (editable at step 6)
+    shot_size:       str = ""   # e.g. "EXTREME WIDE SHOT", "MEDIUM CLOSE-UP", "CLOSE-UP"
 
     # ── Seed ────────────────────────────────────────────────────────────────────
     seed: int = 0  # call scene_seed() to fill this at creation time
@@ -126,6 +127,7 @@ class SceneState:
             "visual_prompt":        self.visual_prompt,
             "negative_prompt":      self.negative_prompt,
             "video_prompt":         self.video_prompt,
+            "shot_size":            self.shot_size,
             "seed":                 self.seed,
             "storyboard_images":    list(self.storyboard_images),
             "approved_image_path":  self.approved_image_path,
@@ -154,6 +156,7 @@ class SceneState:
             visual_prompt        = data.get("visual_prompt", ""),
             negative_prompt      = data.get("negative_prompt", ""),
             video_prompt         = data.get("video_prompt", ""),
+            shot_size            = data.get("shot_size", ""),
             seed                 = data.get("seed", 0),
             storyboard_images    = list(data.get("storyboard_images", [])),
             approved_image_path  = data.get("approved_image_path"),
