@@ -33,6 +33,7 @@ from typing import Callable, Optional
 from comfyui_client import ComfyUIClient
 from pipeline.utils import fill_workflow
 from pipeline.workflow_catalog import resolve_workflow_path
+from pipeline.model_catalog import apply_model_overrides
 
 # Default T2I workflow template — used when no workflow override is given
 _T2I_TEMPLATE = Path(__file__).parent.parent / "workflows" / "flux_schnell_t2i_api.json"
@@ -50,6 +51,7 @@ async def generate_image(
     timeout: int = 180,
     progress_callback: Optional[Callable] = None,
     workflow: str | Path | None = None,
+    model_overrides: dict | None = None,
 ) -> Path:
     """Generate a single image via a T2I workflow. Returns the local file path.
 
@@ -67,6 +69,8 @@ async def generate_image(
         progress_callback: Optional async callable(value, max) for progress updates.
         workflow:          Workflow template path (project-relative or absolute).
                            Defaults to the Flux Schnell template.
+        model_overrides:   Per-slot model swaps {"<node_id>:<field>": filename}
+                           chosen from the server's installed models.
 
     Returns:
         Path to the downloaded image file.
@@ -97,6 +101,7 @@ async def generate_image(
         seed=seed,
         output_prefix=timed_prefix,
     )
+    apply_model_overrides(wf, model_overrides)
 
     # Queue
     prompt_id = await client.queue_prompt(wf)
@@ -146,6 +151,7 @@ async def generate_images(
     timeout: int = 180,
     progress_callback: Optional[Callable] = None,
     workflow: str | Path | None = None,
+    model_overrides: dict | None = None,
 ) -> list[Path]:
     """Generate *count* images (1-5) for a single scene. Each uses seed + i.
 
@@ -169,6 +175,7 @@ async def generate_images(
             timeout=timeout,
             progress_callback=progress_callback,
             workflow=workflow,
+            model_overrides=model_overrides,
         )
         paths.append(path)
     return paths

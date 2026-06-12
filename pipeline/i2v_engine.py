@@ -38,6 +38,7 @@ from typing import Callable, Optional
 from comfyui_client import ComfyUIClient
 from pipeline.utils import fill_workflow
 from pipeline.workflow_catalog import resolve_workflow_path
+from pipeline.model_catalog import apply_model_overrides
 
 # Default I2V workflow template — used when no workflow override is given
 _I2V_TEMPLATE = Path(__file__).parent.parent / "workflows" / "ltx23_i2v_api.json"
@@ -61,6 +62,7 @@ async def generate_video(
     timeout: int = 600,
     progress_callback: Optional[Callable] = None,
     workflow: str | Path | None = None,
+    model_overrides: dict | None = None,
 ) -> tuple[str, Path]:
     """Upload image and generate video via LTX-Video 2.3 I2V.
 
@@ -122,6 +124,7 @@ async def generate_video(
         frames=frames,
         fps=fps,
     )
+    apply_model_overrides(wf, model_overrides)
 
     # ── Step 3: Queue ─────────────────────────────────────────────────────────
     prompt_id = await client.queue_prompt(wf)

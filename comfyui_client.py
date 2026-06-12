@@ -30,6 +30,20 @@ class ComfyUIClient:
         except Exception:
             return False
 
+    async def get_object_info(self) -> dict:
+        """Return the raw /object_info dict: every node class with its input specs.
+
+        Model-list fields (ckpt_name, unet_name, lora_name, …) carry the list of
+        files installed on the server — the source of truth for model pickers.
+        """
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{self.base_url}/object_info",
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                resp.raise_for_status()
+                return await resp.json()
+
     async def get_models(self) -> dict:
         """Get available models from ComfyUI."""
         async with aiohttp.ClientSession() as session:

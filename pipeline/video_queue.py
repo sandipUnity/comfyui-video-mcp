@@ -24,6 +24,7 @@ from pathlib import Path
 from comfyui_client import ComfyUIClient
 from pipeline.utils import fill_workflow
 from pipeline.workflow_catalog import resolve_workflow_path
+from pipeline.model_catalog import apply_model_overrides
 
 # Default I2V workflow template — used when the project doesn't specify one
 _I2V_TEMPLATE = Path(__file__).parent.parent / "workflows" / "ltx23_i2v_api.json"
@@ -79,6 +80,7 @@ async def queue_video_job(
         frames           = project.frames,
         fps              = project.fps,
     )
+    apply_model_overrides(wf, getattr(project, "model_overrides_i2v", None))
 
     # Queue
     prompt_id = await client.queue_prompt(wf)

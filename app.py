@@ -30,7 +30,8 @@ from pipeline import (
     check_model_availability, REQUIRED_MODELS,
     queue_video_job, get_all_statuses, download_completed_video,
     compile_montage, has_montage_support, available_backend,
-    discover_workflows,
+    discover_workflows, save_uploaded_workflow,
+    detect_model_slots, options_for_slot, slot_status,
 )
 from pipeline.style_inference import Character
 from pipeline.story_generator import (
@@ -564,14 +565,22 @@ def _mcp_submit_and_poll(
     return None
 
 
-# ── Workflow picker ───────────────────────────────────────────────────────────
+# ── Workflow + model selection panel ──────────────────────────────────────────
+
+def _get_server_object_info() -> dict | None:
+    """Fetch /object_info once per session (it's ~MBs). Cached in session state."""
+    if "server_object_info" not in st.session_state:
+        st.session_state.server_object_info = None
+    if st.session_state.server_object_info is None:
+        try:
+            st.session_state.server_object_info = asyncio.run(client().get_object_info())
+        except Exception:
+            st.session_state.server_object_info = None
+    return st.session_state.server_object_info
+
 
 def _workflow_picker(kinds: tuple, current: str, key: str, label: str) -> str:
     """Selectbox over local workflow templates of the given kind(s).
-
-    Lists compatible workflows from workflows/. Incompatible templates of the
-    same kind are shown in a collapsed expander with the reason, so the user
-    knows the file was seen but can't be driven by this pipeline.
 
     Returns the selected workflow path (posix, project-relative) — falls back
     to *current* when nothing matches.
@@ -587,9 +596,9 @@ def _workflow_picker(kinds: tuple, current: str, key: str, label: str) -> str:
         )
         return current
 
-    kind_tag = {"t2i": "T2I", "i2v": "I2V", "t2v": "T2V — ignores approved image!"}
+    kind_tag = {"t2i": "🖼 T2I", "i2v": "🎬 I2V", "t2v": "📝 T2V — ignores approved image!"}
     options  = [wf.path for wf in usable]
-    labels   = {wf.path: f"{wf.name}  ({kind_tag.get(wf.kind, wf.kind)})" for wf in usable}
+    labels   = {wf.path: f"{wf.name}   ·   {kind_tag.get(wf.kind, wf.kind)}" for wf in usable}
 
     # Normalise the stored value to posix so matching works on Windows
     cur = Path(current).as_posix() if current else ""
@@ -598,12 +607,8 @@ def _workflow_picker(kinds: tuple, current: str, key: str, label: str) -> str:
     chosen = st.selectbox(
         label, options, index=idx, key=key,
         format_func=lambda pth: labels.get(pth, pth),
-        help=(
-            "Templates are scanned from the local workflows/ folder. "
-            "Add your own: export a workflow from ComfyUI in API format, then replace "
-            "values with {{POSITIVE_PROMPT}}, {{NEGATIVE_PROMPT}}, {{WIDTH}}, {{HEIGHT}}, "
-            "{{SEED}}, {{FRAMES}}, {{FPS}}, {{INPUT_IMAGE}}, {{OUTPUT_PREFIX}} placeholders."
-        ),
+        help="Templates are scanned from the local workflows/ folder. "
+             "Use “Add a workflow” below to import one from your ComfyUI.",
     )
 
     if unusable:
@@ -612,6 +617,102 @@ def _workflow_picker(kinds: tuple, current: str, key: str, label: str) -> str:
                 st.caption(f"`{wf.path}` — {wf.reason}")
 
     return chosen
+
+
+def _model_slots_editor(workflow_path: str, overrides: dict, key_prefix: str) -> dict:
+    """Per-slot model dropdowns fed by the server's installed models.
+
+    Shows every model file the selected workflow loads, with an ✅/❌ installed
+    badge, and lets the user swap each one for any model of the same loader
+    type found on the ComfyUI server. Returns the updated overrides dict.
+    """
+    try:
+        slots = detect_model_slots(workflow_path)
+    except Exception as e:
+        st.caption(f"Could not inspect models in this workflow: {e}")
+        return overrides
+
+    if not slots:
+        st.caption("This workflow loads no model files directly.")
+        return overrides
+
+    info = _get_server_object_info()
+
+    head_l, head_r = st.columns([4, 1])
+    head_l.markdown(f"**Models used by this workflow** ({len(slots)})")
+    with head_r:
+        if st.button("🔄 Refresh", key=f"{key_prefix}_refresh",
+                     help="Re-query the ComfyUI server's installed models"):
+            st.session_state.server_object_info = None
+            st.rerun()
+
+    if info is None:
+        st.warning("ComfyUI not reachable — showing template defaults without server validation.")
+
+    new_overrides = dict(overrides)
+    for slot in slots:
+        opts = options_for_slot(info, slot) if info else []
+        effective, installed = slot_status(slot, opts, overrides.get(slot.key))
+
+        col_label, col_pick = st.columns([2, 3])
+        with col_label:
+            badge = "✅" if installed else ("❌" if info else "❓")
+            st.markdown(f"{badge} `{slot.label}`")
+            if not installed and info:
+                st.caption("not found on server — pick an installed model →")
+        with col_pick:
+            if opts:
+                # Effective value first if it's a valid option, else option 0
+                idx = opts.index(effective) if effective in opts else 0
+                choice = st.selectbox(
+                    slot.label, opts, index=idx,
+                    key=f"{key_prefix}_{slot.key}",
+                    label_visibility="collapsed",
+                )
+            else:
+                choice = st.text_input(
+                    slot.label, value=effective,
+                    key=f"{key_prefix}_{slot.key}",
+                    label_visibility="collapsed",
+                    help="Server options unavailable — enter the exact filename",
+                )
+            if choice and choice != slot.current:
+                new_overrides[slot.key] = choice
+            else:
+                new_overrides.pop(slot.key, None)   # back to template default
+
+    changed = {k: v for k, v in new_overrides.items() if v}
+    if changed:
+        names = " · ".join(f"`{Path(v).name}`" for v in changed.values())
+        st.caption(f"🔧 {names} will replace the template defaults at queue time.")
+    return new_overrides
+
+
+def _workflow_upload_box(key: str) -> None:
+    """Import a workflow exported from ComfyUI ('Save (API Format)').
+
+    Auto-inserts {{PLACEHOLDER}} tokens so the file becomes selectable.
+    """
+    with st.expander("➕ Add a workflow from your ComfyUI"):
+        st.markdown(
+            "In ComfyUI: **Workflow → Export (API)** (or *Save (API Format)*), "
+            "then drop the file here. Prompts, seed, size, frames and output "
+            "nodes are detected and templated automatically."
+        )
+        up = st.file_uploader(
+            "Workflow JSON (API format)", type=["json"],
+            key=f"{key}_uploader", label_visibility="collapsed",
+        )
+        if up is not None and st.button("Import workflow", key=f"{key}_import", type="primary"):
+            try:
+                raw = up.getvalue().decode("utf-8")
+                rel, notes = save_uploaded_workflow(up.name, raw)
+                st.success(f"Imported as `{rel}` — it's now in the workflow list.")
+                for n in notes:
+                    st.caption(n)
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1583,6 +1684,12 @@ def step_6():
             kinds=("t2i",), current=p.workflow_t2i,
             key="wf_t2i_pick", label="Image workflow (T2I)",
         )
+        with st.expander("🧩 Models for this workflow"):
+            p.model_overrides_t2i = _model_slots_editor(
+                p.workflow_t2i, p.model_overrides_t2i, key_prefix="t2i_models",
+            )
+        _workflow_upload_box("t2i_wf")
+
         p.images_per_scene = st.slider(
             "Images per scene", 1, 5, value=p.images_per_scene,
             help="More images = more choice at the review step, but takes longer",
@@ -1641,6 +1748,7 @@ def step_6():
                         output_dir=outdir,
                         timeout=180,
                         workflow=p.workflow_t2i,
+                        model_overrides=p.model_overrides_t2i,
                     ))
                 paths.append(path)
 
@@ -1776,6 +1884,7 @@ def step_7():
                         output_dir=outdir,
                         timeout=180,
                         workflow=p.workflow_t2i,
+                        model_overrides=p.model_overrides_t2i,
                     ))
                 paths.append(path)
 
@@ -2033,6 +2142,11 @@ def step_10():
             "⚠️ The selected workflow is **text-to-video** — it will generate "
             "directly from the video prompt and **ignore your approved storyboard images**."
         )
+    with st.expander("🧩 Models for this workflow"):
+        p.model_overrides_i2v = _model_slots_editor(
+            p.workflow_i2v, p.model_overrides_i2v, key_prefix="i2v_models",
+        )
+    _workflow_upload_box("i2v_wf")
 
     st.divider()
 

@@ -76,6 +76,10 @@ class ProjectState:
     # ── Step 7 — Technical config ────────────────────────────────────────────────
     workflow_t2i:    str = DEFAULT_T2I_WORKFLOW
     workflow_i2v:    str = DEFAULT_I2V_WORKFLOW
+    # Per-slot model overrides: {"<node_id>:<field>": "<model filename>"} —
+    # chosen from the server's installed models, applied after fill_workflow()
+    model_overrides_t2i: dict = field(default_factory=dict)
+    model_overrides_i2v: dict = field(default_factory=dict)
     width:           int = 1920
     height:          int = 1080
     frames:          int = 121
@@ -233,6 +237,8 @@ class ProjectState:
             "scenes":               [s.to_dict() for s in self.scenes],
             "workflow_t2i":         self.workflow_t2i,
             "workflow_i2v":         self.workflow_i2v,
+            "model_overrides_t2i":  dict(self.model_overrides_t2i),
+            "model_overrides_i2v":  dict(self.model_overrides_i2v),
             "width":                self.width,
             "height":               self.height,
             "frames":               self.frames,
@@ -268,6 +274,8 @@ class ProjectState:
             scenes               = scenes,
             workflow_t2i         = data.get("workflow_t2i", DEFAULT_T2I_WORKFLOW),
             workflow_i2v         = data.get("workflow_i2v", DEFAULT_I2V_WORKFLOW),
+            model_overrides_t2i  = dict(data.get("model_overrides_t2i", {})),
+            model_overrides_i2v  = dict(data.get("model_overrides_i2v", {})),
             width                = data.get("width",  1920),
             height               = data.get("height", 1080),
             frames               = data.get("frames", 121),
