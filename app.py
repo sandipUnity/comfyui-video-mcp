@@ -30,6 +30,7 @@ from pipeline import (
     check_model_availability, REQUIRED_MODELS,
     queue_video_job, get_all_statuses, download_completed_video,
     compile_montage, has_montage_support, available_backend,
+    discover_workflows,
 )
 from pipeline.style_inference import Character
 from pipeline.story_generator import (
@@ -351,7 +352,7 @@ _MCP_TIPS: dict[str, list[tuple[str, str]]] = {
     ],
     "character_description": [
         ("📸", "In Copy-Paste mode you can attach a **reference photo** to your chatbot message — the AI will match the description to what it sees."),
-        ("👁️", "The character description gets injected into *every single scene prompt* — visual consistency across all scenes depends on it."),
+        ("👁️", "The character description is injected into every scene where the character is *on screen* — establishing and insert shots stay character-free, like real cinema."),
         ("🎭", "Be specific about clothing: *'worn canvas duster, open at the collar'* generates far more consistent results than just *'jacket'*."),
         ("🔍", "Add one unmistakable physical detail — a scar, unusual eye colour, or specific accessory — as a recognition anchor across scenes."),
         ("💡", "Avoid vague adjectives like *'beautiful'* or *'strong'*. Describe exactly what a camera lens would capture."),
@@ -561,6 +562,56 @@ def _mcp_submit_and_poll(
     # Still waiting — return None.
     # The main router renders the full-screen overlay and triggers the next poll.
     return None
+
+
+# ── Workflow picker ───────────────────────────────────────────────────────────
+
+def _workflow_picker(kinds: tuple, current: str, key: str, label: str) -> str:
+    """Selectbox over local workflow templates of the given kind(s).
+
+    Lists compatible workflows from workflows/. Incompatible templates of the
+    same kind are shown in a collapsed expander with the reason, so the user
+    knows the file was seen but can't be driven by this pipeline.
+
+    Returns the selected workflow path (posix, project-relative) — falls back
+    to *current* when nothing matches.
+    """
+    all_wf      = [wf for wf in discover_workflows() if wf.kind in kinds]
+    usable      = [wf for wf in all_wf if wf.compatible]
+    unusable    = [wf for wf in all_wf if not wf.compatible]
+
+    if not usable:
+        st.warning(
+            f"No compatible workflow templates found in `workflows/` for {label}. "
+            f"Using the project default."
+        )
+        return current
+
+    kind_tag = {"t2i": "T2I", "i2v": "I2V", "t2v": "T2V — ignores approved image!"}
+    options  = [wf.path for wf in usable]
+    labels   = {wf.path: f"{wf.name}  ({kind_tag.get(wf.kind, wf.kind)})" for wf in usable}
+
+    # Normalise the stored value to posix so matching works on Windows
+    cur = Path(current).as_posix() if current else ""
+    idx = options.index(cur) if cur in options else 0
+
+    chosen = st.selectbox(
+        label, options, index=idx, key=key,
+        format_func=lambda pth: labels.get(pth, pth),
+        help=(
+            "Templates are scanned from the local workflows/ folder. "
+            "Add your own: export a workflow from ComfyUI in API format, then replace "
+            "values with {{POSITIVE_PROMPT}}, {{NEGATIVE_PROMPT}}, {{WIDTH}}, {{HEIGHT}}, "
+            "{{SEED}}, {{FRAMES}}, {{FPS}}, {{INPUT_IMAGE}}, {{OUTPUT_PREFIX}} placeholders."
+        ),
+    )
+
+    if unusable:
+        with st.expander(f"ℹ️ {len(unusable)} other template(s) found but not selectable"):
+            for wf in unusable:
+                st.caption(f"`{wf.path}` — {wf.reason}")
+
+    return chosen
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1287,11 +1338,13 @@ def step_5():
                         "character": p.character.description if p.character else "",
                         "scenes": [
                             {
-                                "scene_number": s.scene_number,
-                                "act":          s.act,
-                                "description":  s.description,
-                                "camera":       s.camera,
-                                "lighting":     s.lighting,
+                                "scene_number":       s.scene_number,
+                                "act":                s.act,
+                                "description":        s.description,
+                                "camera":             s.camera,
+                                "lighting":           s.lighting,
+                                "shot_size":          s.shot_size,
+                                "character_presence": getattr(s, "character_presence", "featured"),
                             }
                             for s in p.scenes
                         ],
@@ -1431,11 +1484,25 @@ def step_5():
                 st.rerun()
             new_desc = r1c3.text_input("Description", value=scene.description, key=f"desc_{i}")
 
-            r2c1, r2c2 = st.columns(2)
+            r2c1, r2c2, r2c3 = st.columns([2, 2, 1])
             cam_cur = min(scene.camera_index, len(cam_opts) - 1)
             lit_cur = min(scene.lighting_index, len(lit_opts) - 1)
             chosen_cam = r2c1.selectbox("Camera", cam_opts, index=cam_cur, key=f"cam_{i}")
             chosen_lit = r2c2.selectbox("Lighting", lit_opts, index=lit_cur, key=f"lit_{i}")
+            _presence_opts = ["featured", "background", "none"]
+            _pres_cur = getattr(scene, "character_presence", "featured")
+            chosen_pres = r2c3.selectbox(
+                "Character in shot", _presence_opts,
+                index=_presence_opts.index(_pres_cur) if _pres_cur in _presence_opts else 0,
+                key=f"pres_{i}",
+                help=(
+                    "featured — character is the subject (full description injected) · "
+                    "background — distant figure, silhouette only · "
+                    "none — pure environment/insert shot, no character. "
+                    "After changing this, use the AI re-prompt below (or Enhance all) "
+                    "to rebuild the prompts."
+                ),
+            )
 
             new_prompt = st.text_area("Image prompt (visual_prompt)", value=scene.visual_prompt,
                                       height=80, key=f"vp_{i}")
@@ -1449,6 +1516,7 @@ def step_5():
             scene.lighting_index = lit_idx
             scene.camera         = skill.camera_vocabulary[cam_idx]
             scene.lighting       = skill.lighting_vocabulary[lit_idx]
+            scene.character_presence = chosen_pres
             scene.visual_prompt  = new_prompt
             if not scene.video_prompt or scene.video_prompt == scene.description:
                 scene.video_prompt = new_desc  # keep in sync until step 6
@@ -1505,12 +1573,16 @@ def step_5():
 def step_6():
     p = proj()
     st.header("🖼️ Step 5 — Storyboard Generation")
-    st.caption("Generate reference images for each scene using Flux Schnell.")
+    st.caption("Generate reference images for each scene using the selected T2I workflow.")
 
     dna = p.style_dna
     col_cfg, col_go = st.columns([3, 2])
 
     with col_cfg:
+        p.workflow_t2i = _workflow_picker(
+            kinds=("t2i",), current=p.workflow_t2i,
+            key="wf_t2i_pick", label="Image workflow (T2I)",
+        )
         p.images_per_scene = st.slider(
             "Images per scene", 1, 5, value=p.images_per_scene,
             help="More images = more choice at the review step, but takes longer",
@@ -1568,6 +1640,7 @@ def step_6():
                         output_prefix=f"{scene.scene_id}_v{v+1}",
                         output_dir=outdir,
                         timeout=180,
+                        workflow=p.workflow_t2i,
                     ))
                 paths.append(path)
 
@@ -1702,6 +1775,7 @@ def step_7():
                         output_prefix=f"{scene.scene_id}_regen_v{v+1}",
                         output_dir=outdir,
                         timeout=180,
+                        workflow=p.workflow_t2i,
                     ))
                 paths.append(path)
 
@@ -1945,7 +2019,22 @@ def step_9():
 def step_10():
     p = proj()
     st.header("⚙️ Step 7 — Technical Configuration")
-    st.caption("Set output resolution, verify required models, then confirm to queue videos.")
+    st.caption("Choose the video workflow, set output resolution, verify required models, then confirm.")
+
+    # ── Video workflow selection ──────────────────────────────────────────────
+    st.subheader("Video workflow")
+    p.workflow_i2v = _workflow_picker(
+        kinds=("i2v", "t2v"), current=p.workflow_i2v,
+        key="wf_i2v_pick", label="Video workflow",
+    )
+    _wf_kinds = {wf.path: wf.kind for wf in discover_workflows()}
+    if _wf_kinds.get(Path(p.workflow_i2v).as_posix()) == "t2v":
+        st.warning(
+            "⚠️ The selected workflow is **text-to-video** — it will generate "
+            "directly from the video prompt and **ignore your approved storyboard images**."
+        )
+
+    st.divider()
 
     # ── Resolution / frame settings ───────────────────────────────────────────
     st.subheader("Output settings")

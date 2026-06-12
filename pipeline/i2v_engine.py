@@ -37,8 +37,9 @@ from typing import Callable, Optional
 
 from comfyui_client import ComfyUIClient
 from pipeline.utils import fill_workflow
+from pipeline.workflow_catalog import resolve_workflow_path
 
-# Path to the I2V workflow template
+# Default I2V workflow template — used when no workflow override is given
 _I2V_TEMPLATE = Path(__file__).parent.parent / "workflows" / "ltx23_i2v_api.json"
 
 # Default negative prompt for LTX 2.3
@@ -59,6 +60,7 @@ async def generate_video(
     output_dir: Path | None = None,
     timeout: int = 600,
     progress_callback: Optional[Callable] = None,
+    workflow: str | Path | None = None,
 ) -> tuple[str, Path]:
     """Upload image and generate video via LTX-Video 2.3 I2V.
 
@@ -78,6 +80,8 @@ async def generate_video(
         output_dir:        Local directory to save the video to. Defaults to output/video/
         timeout:           Max seconds to wait for job completion. Default 600 (10 min).
         progress_callback: Optional async callable(value, max) for progress updates.
+        workflow:          Workflow template path (project-relative or absolute).
+                           Defaults to the LTX 2.3 I2V template.
 
     Returns:
         Tuple of (prompt_id, local_video_path).
@@ -103,10 +107,11 @@ async def generate_video(
     img_bytes = image_path.read_bytes()
     server_filename = await client.upload_image(img_bytes, image_path.name)
 
-    # ── Step 2: Fill workflow ─────────────────────────────────────────────────
+    # ── Step 2: Fill workflow (user-selected or default) ──────────────────────
+    template = resolve_workflow_path(workflow) if workflow else _I2V_TEMPLATE
     timed_prefix = f"{output_prefix}_{int(time.time())}"
     wf = fill_workflow(
-        _I2V_TEMPLATE,
+        template,
         positive_prompt=prompt,
         negative_prompt=negative_prompt,
         width=width,

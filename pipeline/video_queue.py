@@ -23,8 +23,9 @@ from pathlib import Path
 
 from comfyui_client import ComfyUIClient
 from pipeline.utils import fill_workflow
+from pipeline.workflow_catalog import resolve_workflow_path
 
-# Path to I2V workflow template
+# Default I2V workflow template — used when the project doesn't specify one
 _I2V_TEMPLATE = Path(__file__).parent.parent / "workflows" / "ltx23_i2v_api.json"
 
 # Default negative for LTX 2.3
@@ -61,10 +62,13 @@ async def queue_video_job(
     img_bytes = img_path.read_bytes()
     server_filename = await client.upload_image(img_bytes, img_path.name)
 
-    # Fill workflow
+    # Fill workflow — honour the project's selected video workflow
+    wf_path = getattr(project, "workflow_i2v", None)
+    template = resolve_workflow_path(wf_path) if wf_path else _I2V_TEMPLATE
+
     output_prefix = f"video/{scene.scene_id}_{int(time.time())}"
     wf = fill_workflow(
-        _I2V_TEMPLATE,
+        template,
         positive_prompt  = scene.video_prompt,
         negative_prompt  = scene.negative_prompt or _DEFAULT_NEGATIVE,
         width            = project.width,

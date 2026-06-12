@@ -32,8 +32,9 @@ from typing import Callable, Optional
 
 from comfyui_client import ComfyUIClient
 from pipeline.utils import fill_workflow
+from pipeline.workflow_catalog import resolve_workflow_path
 
-# Path to the T2I workflow template — resolved relative to project root
+# Default T2I workflow template — used when no workflow override is given
 _T2I_TEMPLATE = Path(__file__).parent.parent / "workflows" / "flux_schnell_t2i_api.json"
 
 
@@ -48,8 +49,9 @@ async def generate_image(
     output_dir: Path | None = None,
     timeout: int = 180,
     progress_callback: Optional[Callable] = None,
+    workflow: str | Path | None = None,
 ) -> Path:
-    """Generate a single image via Flux Schnell. Returns the local file path.
+    """Generate a single image via a T2I workflow. Returns the local file path.
 
     Args:
         client:            A ComfyUIClient connected to the ComfyUI server.
@@ -63,6 +65,8 @@ async def generate_image(
                            output/storyboard/
         timeout:           Max seconds to wait for job completion.
         progress_callback: Optional async callable(value, max) for progress updates.
+        workflow:          Workflow template path (project-relative or absolute).
+                           Defaults to the Flux Schnell template.
 
     Returns:
         Path to the downloaded image file.
@@ -82,9 +86,10 @@ async def generate_image(
     # Build a unique prefix so multiple generations don't collide
     timed_prefix = f"{output_prefix}_{int(time.time())}"
 
-    # Fill the workflow template
+    # Fill the workflow template (user-selected or default)
+    template = resolve_workflow_path(workflow) if workflow else _T2I_TEMPLATE
     wf = fill_workflow(
-        _T2I_TEMPLATE,
+        template,
         positive_prompt=prompt,
         negative_prompt=negative_prompt,
         width=width,
@@ -140,6 +145,7 @@ async def generate_images(
     output_dir: Path | None = None,
     timeout: int = 180,
     progress_callback: Optional[Callable] = None,
+    workflow: str | Path | None = None,
 ) -> list[Path]:
     """Generate *count* images (1-5) for a single scene. Each uses seed + i.
 
@@ -162,6 +168,7 @@ async def generate_images(
             output_dir=output_dir,
             timeout=timeout,
             progress_callback=progress_callback,
+            workflow=workflow,
         )
         paths.append(path)
     return paths
