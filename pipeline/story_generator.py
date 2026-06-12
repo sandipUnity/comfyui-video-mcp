@@ -225,8 +225,8 @@ _ACTS: dict[str, dict[int, list[str]]] = {
         5:  ["HOOK",    "SETUP",        "BUILD",        "REVELATION",   "RESOLUTION"],
         6:  ["HOOK",    "ORDINARY",     "INCITING",     "BUILD",        "REVELATION",   "RESOLUTION"],
         7:  ["HOOK",    "ORDINARY",     "INCITING",     "BUILD",        "CRISIS",       "REVELATION",   "RESOLUTION"],
-        12: ["HOOK",    "ORDINARY",     "INCITING",     "BUILD",        "BUILD",        "MIDPOINT",
-             "BUILD",   "CRISIS",       "REVELATION",   "TWIST",        "CLIMAX",       "RESOLUTION"],
+        12: ["HOOK",    "ORDINARY",     "INCITING",     "BUILD1",       "BUILD2",       "MIDPOINT",
+             "BUILD3",  "CRISIS",       "REVELATION",   "TWIST",        "CLIMAX",       "RESOLUTION"],
     },
     "struggle": {
         3:  ["HOOK",    "CONFRONTATION","VICTORY"],
@@ -266,46 +266,50 @@ def _closest_acts(template: str, n: int) -> list[str]:
 
 # ── Scene description templates ───────────────────────────────────────────────
 
-def _scene_desc(act: str, idea: str, idx: int, total: int) -> str:
-    """Generate a one-line scene description given act label and idea."""
+def _scene_desc(act: str, idea: str, idx: int, total: int, mood: Optional[str] = None) -> str:
+    """Generate a one-line cinematic scene description for an act label.
+
+    Templates name a concrete subject, an action, and one striking detail —
+    written as something a camera can frame, not an abstract summary.
+    """
     act_up = act.upper()
-    progress = idx / max(total - 1, 1)
+    m = f", {mood} undertone" if mood else ""
 
     templates = {
-        "HOOK":         f"Opening: {idea}, the world establishes itself in stillness",
-        "ORDINARY":     f"The everyday: {idea} in its natural state, before everything changes",
-        "BEFORE":       f"The world before: {idea}, ordinary and unaware of what's coming",
-        "INCITING":     f"Something shifts: a disruption enters the world of {idea}",
-        "CATALYST":     f"The spark: the moment that sets {idea} on an irreversible path",
-        "SETUP":        f"The stage is set: {idea}, all pieces moving into position",
-        "BUILD":        f"Momentum builds: {idea}, intensity rising, no going back",
-        "BUILD1":       f"First escalation: {idea}, pressure begins to mount",
-        "BUILD2":       f"Rising tension: {idea}, the stakes become clear",
-        "BUILD3":       f"Peak tension: {idea}, everything converging toward crisis",
-        "MIDPOINT":     f"The halfway shift: {idea}, perspective changes everything",
-        "CHALLENGE":    f"The obstacle: {idea} faces its greatest test yet",
-        "CONFRONTATION":f"Face to face: {idea}, the central conflict at its peak",
-        "CRISIS":       f"The breaking point: {idea}, all seems lost",
-        "SETBACK":      f"A setback: {idea}, forced to rethink the approach",
-        "REGROUPING":   f"Regrouping: {idea} finds the strength to continue",
-        "REVELATION":   f"The discovery: {idea}, a truth is finally revealed",
-        "DISCOVERY":    f"Revealed: {idea}, seeing it for the first time",
-        "TWIST":        f"Unexpected turn: {idea} takes a direction no one saw coming",
-        "TEST":         f"The test: {idea} confronts the hardest challenge of the new path",
-        "TEST1":        f"First test: {idea}, is the change strong enough to hold?",
-        "TEST2":        f"The real test: {idea}, pushed to the absolute limit",
-        "CHANGE":       f"The transformation: {idea} in the process of becoming",
-        "CHANGE1":      f"Beginning to change: {idea}, old ways start to fall away",
-        "CHANGE2":      f"Deep into change: {idea}, unrecognisable from before",
-        "DOUBT":        f"Moment of doubt: {idea}, questioning everything",
-        "DECISION":     f"The decision: {idea}, choosing who to be",
-        "CLIMAX":       f"The climax: {idea}, everything at its most intense",
-        "VICTORY":      f"Victory: {idea}, the struggle finally resolves",
-        "RESOLUTION":   f"Resolution: {idea}, the world settles into its new form",
-        "AFTER":        f"The world after: {idea}, transformed and at rest",
-        "CODA":         f"Final reflection: {idea}, looking back from the new horizon",
+        "HOOK":         f"A vast establishing frame of the world of {idea} — held perfectly still until one small detail moves and breaks the silence{m}",
+        "ORDINARY":     f"Extreme close textures of the daily rhythm of {idea}: hands, surfaces, repeated motions, dust hanging in a shaft of light",
+        "BEFORE":       f"The world of {idea} at rest — long shadows, slow drifting atmosphere, a single light source that will matter later",
+        "INCITING":     f"One wrong element enters the frame of {idea} — small at first, reflected in a surface before it is seen directly",
+        "CATALYST":     f"The exact moment {idea} tips: an object falls, a light changes colour, a line is crossed — shot tight on the point of contact",
+        "SETUP":        f"Pieces of {idea} click into position one by one, each cut tighter than the last, the empty space in frame shrinking",
+        "BUILD":        f"Motion accelerates through the world of {idea} — shadows lengthen, sound and movement stack until the frame can barely hold it",
+        "BUILD1":       f"First pressure on {idea}: a hairline crack appears in something that looked permanent, almost too small to notice",
+        "BUILD2":       f"The stakes of {idea} turn physical — wind rises, surfaces tremble, the comfortable distance between safety and danger halves",
+        "BUILD3":       f"Everything in the world of {idea} converges on one point — converging lines, gathering crowd, narrowing corridor of light",
+        "MIDPOINT":     f"A reveal flips the scale of {idea}: pull back or push in until what we thought we understood becomes something else entirely",
+        "CHALLENGE":    f"The largest obstacle in {idea} fills the frame, dwarfing everything — shot from below, edges disappearing out of frame",
+        "CONFRONTATION":f"Two forces of {idea} face each other across a charged gap — dust or rain hangs between them, nothing moves yet",
+        "CRISIS":       f"The darkest frame of {idea}: a single failing light source, debris of what was built, stillness that reads as defeat",
+        "SETBACK":      f"What was gained in {idea} slips away in one continuous motion — the camera holds as it goes, refusing to cut",
+        "REGROUPING":   f"In the quiet wreckage of {idea}, one deliberate gesture begins the rebuild — small, precise, defiant",
+        "REVELATION":   f"The hidden truth of {idea} is uncovered in hard light — a slow reveal that recontextualises the opening image",
+        "DISCOVERY":    f"First full sight of the heart of {idea}: the frame opens wide, scale lands, dust and light pour through",
+        "TWIST":        f"The frame of {idea} turns literal somersault — what was background becomes subject, an earlier detail returns meaning something new",
+        "TEST":         f"The new strength of {idea} is struck hard, once — impact frozen at the moment of contact, outcome withheld a beat",
+        "TEST1":        f"A first trial for {idea}: deliberate, watched, one chance — the surrounding world holds its breath",
+        "TEST2":        f"The limit of {idea} is found and pushed past — material strain made visible: bending, glowing, fraying",
+        "CHANGE":       f"Transformation made visible on {idea}: old surface giving way to new in one continuous visual metamorphosis",
+        "CHANGE1":      f"The first piece of the old world of {idea} falls away — caught mid-air, weightless, beautiful",
+        "CHANGE2":      f"Deep in transformation, {idea} is barely recognisable — mirrored against what it was in the opening frame",
+        "DOUBT":        f"A long still frame inside {idea}: reflections, halved light, the visual language of a decision not yet made",
+        "DECISION":     f"One decisive physical act commits {idea} forever — a door, a switch, a step over a visible line, no cut away",
+        "CLIMAX":       f"Everything {idea} has built collides at maximum intensity — the motif from the opening returns at the centre of the frame",
+        "VICTORY":      f"Wide triumphant frame of {idea} remade — the threat's geometry now broken on the ground, light fully returned",
+        "RESOLUTION":   f"The world of {idea} settles into its new shape — same angle as the opening frame, everything changed inside it",
+        "AFTER":        f"Long aftermath frame of {idea}: repaired, quieter, the planted motif resting where the story leaves it",
+        "CODA":         f"A final held image of {idea} from a distance — small against the horizon, the question of frame one answered",
     }
-    return templates.get(act_up, f"Scene {idx+1}: {idea}, {act.lower()} moment")
+    return templates.get(act_up, f"Scene {idx+1}: {idea}, {act.lower()} moment rendered as one concrete image")
 
 
 # ── Offline story generation ──────────────────────────────────────────────────
@@ -315,47 +319,48 @@ def _offline_options(idea: str, n_scenes: int, mood: Optional[str]) -> list[dict
 
     return [
         {
-            "title":       "The Discovery",
+            "title":       "First Light",
             "summary":     (
-                f"A journey from the ordinary world into the extraordinary through {idea}{mood_text}. "
-                f"What is found changes the discoverer — and perhaps the world around them."
+                f"A perfectly still world hides something extraordinary inside {idea} — and one small "
+                f"moving detail gives it away{mood_text}. What is uncovered rewrites the meaning of the "
+                f"opening frame."
             ),
-            "arc":         "stillness → awakening → wonder → revelation → transformation",
-            "pacing":      "Slow and contemplative open, building to an explosive discovery, resolving in peaceful reflection.",
-            "reasoning":   "Discovery arcs create deep audience investment — viewers experience the revelation alongside the subject.",
+            "arc":         "stillness → suspicion → pursuit → revelation → transformation",
+            "pacing":      "A held-breath open, tightening cuts toward an explosive reveal, then one long exhale of an ending.",
+            "reasoning":   "A discovery engine lets the audience uncover the truth at the exact moment the subject does — the strongest form of investment.",
             "act_labels":  _closest_acts("discovery", n_scenes),
             "scene_descriptions": [
-                _scene_desc(act, idea, i, n_scenes)
+                _scene_desc(act, idea, i, n_scenes, mood)
                 for i, act in enumerate(_closest_acts("discovery", n_scenes))
             ],
         },
         {
-            "title":       "The Struggle",
+            "title":       "Breaking Point",
             "summary":     (
-                f"Forces oppose {idea}{mood_text}. "
-                f"Through challenge, confrontation and perseverance, a hard-won victory reshapes everything."
+                f"An opposing force presses on {idea} until something visibly cracks{mood_text}. "
+                f"Victory is taken at the moment all the visual geometry says defeat."
             ),
-            "arc":         "strength → challenge → crisis → resolve → victory",
-            "pacing":      "Escalating pressure with a sharp confrontation peak and cathartic release.",
-            "reasoning":   "Struggle narratives are viscerally engaging — the audience roots for the outcome through every obstacle.",
+            "arc":         "strength → pressure → collapse → defiance → triumph",
+            "pacing":      "Relentless escalation, a near-silent rock-bottom beat, then a sharp cathartic release.",
+            "reasoning":   "A duel engine creates physical, frameable stakes — every scene shows force against resistance.",
             "act_labels":  _closest_acts("struggle", n_scenes),
             "scene_descriptions": [
-                _scene_desc(act, idea, i, n_scenes)
+                _scene_desc(act, idea, i, n_scenes, mood)
                 for i, act in enumerate(_closest_acts("struggle", n_scenes))
             ],
         },
         {
-            "title":       "The Change",
+            "title":       "Point of No Return",
             "summary":     (
-                f"Everything begins ordinary in the world of {idea}{mood_text}. "
-                f"A single catalyst sets an irreversible transformation in motion."
+                f"One irreversible act sets {idea} transforming, piece by visible piece{mood_text}. "
+                f"The final frame mirrors the first — same angle, everything inside it changed."
             ),
-            "arc":         "ordinary → disrupted → transforming → tested → reborn",
-            "pacing":      "Quiet ordinary world shattered by a catalyst, slow deep change, sharp test, profound new reality.",
-            "reasoning":   "Transformation stories resonate universally — change is the most human of all experiences.",
+            "arc":         "ordinary → rupture → metamorphosis → trial → rebirth",
+            "pacing":      "A quiet ordinary world ruptured early, a long mesmerising transformation, one hard test, a still new reality.",
+            "reasoning":   "A transformation engine delivers the strongest before/after contrast — the bookend framing makes change visible.",
             "act_labels":  _closest_acts("change", n_scenes),
             "scene_descriptions": [
-                _scene_desc(act, idea, i, n_scenes)
+                _scene_desc(act, idea, i, n_scenes, mood)
                 for i, act in enumerate(_closest_acts("change", n_scenes))
             ],
         },
@@ -374,11 +379,22 @@ def _claude_options(idea: str, n_scenes: int, mood: Optional[str]) -> list[dict]
         client = anthropic.Anthropic(api_key=api_key)
         mood_clause = f" The mood/tone should be: {mood}." if mood else ""
         prompt = (
-            f"Generate exactly 3 distinct narrative treatments for a {n_scenes * 5}-second video about: \"{idea}\".{mood_clause}\n\n"
+            f"You are an award-winning director. Generate exactly 3 distinct narrative treatments "
+            f"for a {n_scenes * 5}-second video about: \"{idea}\".{mood_clause}\n\n"
             f"Each treatment should suggest exactly {n_scenes} scenes.\n\n"
+            f"CRAFT REQUIREMENTS:\n"
+            f"- Scene 1 is a striking visual hook that raises a question — never someone simply "
+            f"standing, walking, or waking up\n"
+            f"- Plant one concrete visual motif early and pay it off with new meaning in the final scene\n"
+            f"- Every scene escalates; around the midpoint something flips (reveal/reversal/scale change)\n"
+            f"- Adjacent scenes collide: vast vs intimate, still vs violent, dark vs blinding\n"
+            f"- The final scene is one indelible image answering the question scene 1 asked\n"
+            f"- Every scene description: concrete subject + concrete action + ONE striking visual detail\n"
+            f"- Banned: 'we see', 'the camera shows', 'a sense of', 'begins to'; banned generic titles "
+            f"containing 'Journey', 'Discovery', 'Story', 'Tale'\n\n"
             f"Return a JSON array of 3 objects, each with these exact keys:\n"
-            f'  "title":             short name (2-4 words)\n'
-            f'  "summary":           2-sentence description\n'
+            f'  "title":             evocative name (2-4 words)\n'
+            f'  "summary":           2-sentence description containing the central visual hook\n'
             f'  "arc":               emotional journey as 5 beats separated by →\n'
             f'  "pacing":            one sentence about rhythm and tension\n'
             f'  "reasoning":         one sentence on why this structure fits the idea\n'

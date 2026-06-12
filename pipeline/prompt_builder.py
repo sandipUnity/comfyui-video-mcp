@@ -120,11 +120,14 @@ def build_story_prompt(
 }'''
 
     media_block = _media_section(media_paths)
+    hooks_block = _skill_hooks(style_dna)
 
     return f"""{_header("STAGE 3: STORY OPTIONS")}
 
-You are a professional screenwriter and video director specialising in
-short-form cinematic storytelling.
+You are an award-winning director and screenwriter known for short films that
+stop the scroll in the first two seconds and stay in the viewer's head for
+days. You think in IMAGES, not summaries — every beat you write is something
+a camera can frame.
 
 PROJECT CONTEXT:
   Idea:     "{idea}"
@@ -132,26 +135,47 @@ PROJECT CONTEXT:
 {mood_line}
 
 {_style_block(style_dna)}
-{media_block}
+{hooks_block}{media_block}
 
 YOUR TASK:
 Generate exactly 3 distinct story treatment options for this video project.
 Each treatment must cover exactly {n_scenes} scenes.
 
-RULES:
-1. Each of the 3 treatments must have a genuinely different narrative structure
+CRAFT REQUIREMENTS — these separate a forgettable video from an unforgettable one:
+1. OPENING HOOK — scene 1 must be a striking visual that raises a question;
+   never start with someone simply standing, walking, or waking up
+2. VISUAL MOTIF — plant one concrete recurring object/image/gesture in an early
+   scene and pay it off with new meaning in the final scene
+3. ESCALATION — every scene must raise the stakes or deepen the question;
+   if a scene could be removed without loss, replace it
+4. THE TURN — around the midpoint something must flip: a reveal, a reversal,
+   or a change of scale that recontextualises everything before it
+5. CONTRAST CUTS — adjacent scenes should collide: vast↔intimate, still↔violent,
+   dark↔blinding, silent↔chaotic
+6. FINAL IMAGE — the last scene is a single indelible image that answers (or
+   perfectly reframes) the question scene 1 asked
+7. SPECIFICITY — every scene description names a concrete subject, a concrete
+   action, and ONE striking visual detail (the detail is what makes it memorable)
+
+FORMAL RULES:
+1. The 3 treatments must use genuinely different narrative engines (e.g.
+   discovery vs duel vs transformation) — not the same story re-paced
 2. Act labels must be UPPERCASE (e.g. HOOK, BUILD, CLIMAX, RESOLUTION)
 3. Scene descriptions must be exactly one sentence each — visual and specific
-4. Write coverage like a film director: mix establishing shots, pure environment
+4. Direct coverage like a film director: mix establishing shots, pure environment
    beats, and detail/insert shots with character moments — the protagonist must
    NOT appear in every scene description (aim for 1-2 scenes with no character)
-5. "summary" must be exactly 2 sentences
-6. "arc" must be exactly 5 emotional beats separated by →
-7. "reasoning" must be one sentence explaining why this structure fits the idea
-8. "act_labels" and "scene_descriptions" must each have exactly {n_scenes} items
-9. If reference images are attached, let them directly inform the visual style,
-   setting, and aesthetic choices in your scene descriptions
-10. Do not add any explanation, preamble, or text outside the JSON block
+5. "title" must be evocative and specific — BANNED: generic titles containing
+   "Journey", "Discovery", "Story", "Tale"
+6. "summary" must be exactly 2 sentences and contain the central visual hook
+7. "arc" must be exactly 5 emotional beats separated by →
+8. "reasoning" must be one sentence explaining why this structure fits the idea
+9. "act_labels" and "scene_descriptions" must each have exactly {n_scenes} items
+10. BANNED PHRASES in scene descriptions: "we see", "the camera shows",
+    "a sense of", "begins to", "starts to" — write the action itself
+11. If reference images are attached, let them directly inform the visual style,
+    setting, and aesthetic choices in your scene descriptions
+12. Do not add any explanation, preamble, or text outside the JSON block
 
 RESPOND WITH ONLY THIS JSON — no text before or after:
 
@@ -418,6 +442,29 @@ def _get_skill_notes(style_dna) -> str:
         f"Lighting: {style_dna.lighting_style}\n"
         + (f"Camera vocabulary examples:\n{cam_examples}" if cam_examples else "")
     )
+
+
+def _skill_hooks(style_dna) -> str:
+    """Return the skill's proven 2-second hook patterns as a prompt block.
+
+    These come from the skills engine's per-genre production knowledge and give
+    the story stage concrete, battle-tested openers instead of generic ones.
+    """
+    if style_dna is None:
+        return ""
+    try:
+        import sys, pathlib
+        _root = str(pathlib.Path(__file__).parent.parent)
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from skills_engine import SKILLS
+        skill = SKILLS.get(style_dna.skill_id)
+        if skill and getattr(skill, "hook_patterns", None):
+            lines = "\n".join(f"  - {h}" for h in skill.hook_patterns[:4])
+            return f"\nPROVEN HOOK PATTERNS for this genre (adapt, don't copy):\n{lines}\n"
+    except Exception:
+        pass
+    return ""
 
 
 def _media_section(media_paths: list | None) -> str:
