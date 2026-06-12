@@ -1,5 +1,6 @@
 """ComfyUI REST API client with WebSocket progress tracking."""
 
+import io
 import json
 import uuid
 import asyncio
@@ -156,6 +157,51 @@ class ComfyUIClient:
                 saved_paths.append(out_path)
 
         return saved_paths
+
+    async def upload_image(self, image_bytes: bytes, filename: str, overwrite: bool = True) -> str:
+        """Upload an image to ComfyUI's input folder.
+
+        Args:
+            image_bytes: Raw image data (PNG, JPG, etc.)
+            filename:    Desired filename on the server (e.g. "scene_01.png")
+            overwrite:   Replace existing file with the same name (default True)
+
+        Returns:
+            The server-side filename to use in LoadImage nodes.
+        """
+        data = aiohttp.FormData()
+        data.add_field(
+            "image",
+            io.BytesIO(image_bytes),
+            filename=filename,
+            content_type="image/png",
+        )
+        data.add_field("overwrite", "true" if overwrite else "false")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{self.base_url}/upload/image", data=data) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise RuntimeError(f"Image upload failed {resp.status}: {text}")
+                result = await resp.json()
+                # ComfyUI returns {"name": "filename.png", "subfolder": "", "type": "input"}
+                return result["name"]
+
+    async def get_output_images(self, history: dict) -> list[dict]:
+        """Extract image output info from a completed job's history.
+
+        Returns a list of dicts, each with keys:
+            filename, subfolder, type  (ready to pass to get_image())
+        """
+        outputs = []
+        for node_id, node_output in history.get("outputs", {}).items():
+            for img_info in node_output.get("images", []):
+                outputs.append({
+                    "filename": img_info["filename"],
+                    "subfolder": img_info.get("subfolder", ""),
+                    "type":      img_info.get("type", "output"),
+                    "node_id":   node_id,
+                })
+        return outputs
 
     async def interrupt(self):
         """Interrupt the current generation."""

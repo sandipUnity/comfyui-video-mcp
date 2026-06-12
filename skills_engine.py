@@ -83,7 +83,7 @@ SKILLS: dict[str, SkillSpec] = {
             "subject emerging from total darkness into single spotlight"
         ],
         style_tags=["cinematic", "photorealistic", "film photography", "dramatic lighting"],
-        technical_specs={"fps": 24, "width": 768, "height": 512, "steps": 25, "cfg": 7.0},
+        technical_specs={"fps": 24, "width": 1920, "height": 1080, "steps": 25, "cfg": 7.0},
         prompt_template="""You are a professional cinematographer writing ComfyUI prompts.
 Use precise technical language:
 - Camera moves: specify velocity in ft/s, exact angle in degrees
@@ -137,7 +137,7 @@ Never use vague terms like "beautiful" or "nice". Be technical and specific.""",
             "morph from wireframe mesh to full photorealistic render"
         ],
         style_tags=["3D render", "CGI", "photorealistic", "Octane", "Unreal Engine"],
-        technical_specs={"fps": 30, "width": 768, "height": 432, "steps": 30, "cfg": 7.5},
+        technical_specs={"fps": 30, "width": 1920, "height": 1080, "steps": 30, "cfg": 7.5},
         prompt_template="""You are a 3D rendering artist writing ComfyUI prompts.
 Use render engine terminology:
 - Materials: PBR (metalness %, roughness %), SSS depth in mm, IOR values
@@ -189,7 +189,7 @@ Include specific material descriptions: "brushed aluminum 0.8 roughness 0.95 met
             "fourth-wall break: character notices and turns to camera"
         ],
         style_tags=["cartoon", "animation", "cel shading", "flat color", "clean lineart"],
-        technical_specs={"fps": 24, "width": 768, "height": 432, "steps": 20, "cfg": 8.0},
+        technical_specs={"fps": 24, "width": 1920, "height": 1080, "steps": 20, "cfg": 8.0},
         prompt_template="""You are a professional animation director writing ComfyUI prompts for cartoon content.
 Apply the 12 classic animation principles through prompt language:
 - Squash and stretch: describe deformation percentages
@@ -242,7 +242,7 @@ Colors should be bold and described by hex or Pantone when possible.""",
             "impact shockwave ripples fabric, dirt, and hair outward from strike point"
         ],
         style_tags=["action", "combat", "dynamic", "motion blur", "impact frames"],
-        technical_specs={"fps": 24, "width": 768, "height": 432, "steps": 25, "cfg": 7.5},
+        technical_specs={"fps": 24, "width": 1920, "height": 1080, "steps": 25, "cfg": 7.5},
         prompt_template="""You are an action choreographer writing ComfyUI prompts.
 CRITICAL: Be choreographically specific, never vague.
   ✓ "attacker launches right spinning heel kick, foot connects at jaw height,
@@ -301,7 +301,7 @@ Always specify:
             "anime opening sequence style: character pose with name overlay, dramatic wind"
         ],
         style_tags=["anime", "manga style", "cel shading", "Japanese animation", "2D animation"],
-        technical_specs={"fps": 24, "width": 768, "height": 432, "steps": 22, "cfg": 8.0},
+        technical_specs={"fps": 24, "width": 1920, "height": 1080, "steps": 22, "cfg": 8.0},
         prompt_template="""You are an anime director writing ComfyUI prompts.
 Apply genre-specific visual language:
 - SHONEN (action): explosive poses, 130%+ saturation, speed lines, impact frames,
@@ -356,7 +356,7 @@ Include specific animation effects: speed lines, smear frames, impact frames, au
             "code lines appearing and instantly morphing into finished product"
         ],
         style_tags=["motion graphics", "UI design", "tech commercial", "product showcase", "modern"],
-        technical_specs={"fps": 60, "width": 1280, "height": 720, "steps": 25, "cfg": 7.0},
+        technical_specs={"fps": 60, "width": 1920, "height": 1080, "steps": 25, "cfg": 7.0},
         prompt_template="""You are a motion designer writing ComfyUI prompts for tech/SaaS advertisements.
 Device framing rule: product UI must fill 40-60% of frame for legibility.
 Visual styles to specify: dark premium, neon cyber, clean white, gradient mesh.
@@ -513,7 +513,7 @@ Avoid: false promises, static openings, no audio, shaky unintentional camera."""
             "waveform visualization morphing into performance environment"
         ],
         style_tags=["music video", "concert", "performance", "beat-synced", "visual rhythm"],
-        technical_specs={"fps": 24, "width": 1280, "height": 720, "steps": 25, "cfg": 7.5},
+        technical_specs={"fps": 24, "width": 1920, "height": 1080, "steps": 25, "cfg": 7.5},
         prompt_template="""You are a music video director writing ComfyUI prompts.
 Genre-visual mapping — reference these specific aesthetics:
 - Hip-Hop: urban environments (warehouses/parking lots), hard shadows, neon practical
@@ -566,7 +566,7 @@ Describe beat synchronization explicitly in the prompt.""",
             "customer transformation: before state establishing shot"
         ],
         style_tags=["brand film", "documentary", "authentic", "emotional", "corporate story"],
-        technical_specs={"fps": 24, "width": 1280, "height": 720, "steps": 22, "cfg": 7.0},
+        technical_specs={"fps": 24, "width": 1920, "height": 1080, "steps": 22, "cfg": 7.0},
         prompt_template="""You are a brand filmmaker writing ComfyUI prompts.
 Show don't tell principle is absolute:
   ✓ "worn leather tool belt with sawdust on the carpenter's hands"
@@ -790,6 +790,36 @@ def build_comfyui_negative(skill: SkillSpec, custom_negative: str = "") -> str:
     if custom_negative:
         combined.insert(0, custom_negative)
     return ", ".join(combined)
+
+
+def build_comfyui_video_prompt(
+    base_prompt: str,
+    skill: SkillSpec,
+    cam: str = "",
+    motion_style: str = "",
+) -> str:
+    """Build a motion-focused video prompt for I2V generation.
+
+    Unlike build_comfyui_positive(), this targets *movement and action* rather
+    than visual appearance — the reference image already defines the look.
+
+    Args:
+        base_prompt:   Scene description or action sentence.
+        skill:         Skill for motion vocabulary and style tags.
+        cam:           Specific camera move for this scene (from skill.camera_vocabulary).
+        motion_style:  Project-level motion descriptor (from StyleDNA.motion_style).
+
+    Returns:
+        Comma-joined motion prompt string.
+    """
+    parts = [base_prompt.strip()]
+    if cam:
+        parts.append(cam)
+    if motion_style:
+        parts.append(motion_style)
+    # Two style tags keep the clip tonally consistent with the storyboard
+    parts.extend(skill.style_tags[:2])
+    return ", ".join(p for p in parts if p)
 
 
 def get_workflow_overrides(skill: SkillSpec) -> dict:

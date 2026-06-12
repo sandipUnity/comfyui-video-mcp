@@ -19,8 +19,8 @@ pipeline:
   default_model: "wan22_lightx2v"   # Wan2.2 + LightX2V 4-step LoRA (~108s/scene)
   default_frames: 25                # LTX works best at 25 frames
   default_fps: 24
-  default_width: 768
-  default_height: 512
+  default_width: 1920
+  default_height: 1080
   default_steps: 20                 # ltxvideo dev: 20-30 | distilled: 4-8
   default_cfg: 3.0                  # LTX works best at low CFG (2.5–4.0)
 
@@ -84,8 +84,8 @@ models:
     steps_override: 4      # LightX2V 4-step LoRA — do NOT change
     cfg_override: 1.0      # LightX2V requires low CFG — do NOT change
     shift: 5.0             # ModelSamplingSD3 shift
-    default_width: 1280
-    default_height: 720
+    default_width: 1920
+    default_height: 1080
     default_frames: 81     # 81 frames ÷ 16 fps ≈ 5 s
     default_fps: 16
 
@@ -96,6 +96,32 @@ models:
     workflow: "workflows/wan22_t2v_api.json"
     steps_override: 20
     cfg_override: 5.0
+
+  # ── Flux Schnell fp8 (T2I — storyboard image generation) ─────────────────
+  flux_schnell:
+    checkpoint: "flux1-schnell-fp8.safetensors"   # in models/checkpoints/
+    workflow:   "workflows/flux_schnell_t2i_api.json"
+    steps:      4        # fixed — Schnell is a 4-step distilled model
+    cfg:        1.0      # Schnell uses CFG 1.0 (guidance-free)
+    default_width:  1920
+    default_height: 1080
+    sampler:    "euler"
+    scheduler:  "simple"
+
+  # ── LTX-Video 2.3 22B I2V (primary video model) ───────────────────────────
+  ltx23_i2v:
+    checkpoint:         "ltx-2.3-22b-dev-fp8.safetensors"    # in models/checkpoints/
+    text_encoder:       "gemma_3_12B_it_fp4_mixed.safetensors" # in models/text_encoders/
+    distilled_lora:     "ltx-2.3-22b-distilled-lora-384.safetensors"  # in models/loras/
+    spatial_upscaler:   "ltx-2.3-spatial-upscaler-x2-1.1.safetensors" # in models/upscale_models/
+    workflow:           "workflows/ltx23_i2v_api.json"
+    default_width:  1920
+    default_height: 1080
+    default_frames: 121  # 121 frames ÷ 25 fps ≈ 4.8 s
+    default_fps:    25
+    # Two-stage sigma schedule (low-res first, then high-res refinement)
+    sigmas_stage1: "0.85, 0.7250, 0.4219, 0.0"
+    sigmas_stage2: "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
 
   # ── Not installed — left for reference ───────────────────────────────────
   animatediff:
@@ -109,7 +135,7 @@ models:
 montage:
   default_transition: "dissolve"   # fade | dissolve | wipe | slide | zoom | none
   transition_duration: 0.5
-  default_resolution: "1280x720"
+  default_resolution: "1920x1080"
   default_fps: 24
   default_music: ""
   music_volume: 0.3
