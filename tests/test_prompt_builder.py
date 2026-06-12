@@ -330,7 +330,29 @@ class TestBuildScenePromptsPrompt:
     def test_no_character_section_when_none(self):
         dna = _make_style_dna()
         result = build_scene_prompts_prompt("idea", None, None, dna, self._make_scenes(2))
-        assert "Character:" not in result or 'Character: ""' in result
+        # No quoted character description line and no presence markings without a character
+        assert 'Character: "' not in result
+        assert "CHARACTER PRESENCE" not in result
+        assert "| Character: FEATURED" not in result
+
+    def test_presence_markings_present_with_character(self):
+        dna  = _make_style_dna()
+        char = _make_character()
+        result = build_scene_prompts_prompt("idea", None, char, dna, self._make_scenes(2))
+        # Presence legend + per-scene markings appear when a character is locked
+        assert "CHARACTER PRESENCE" in result
+        assert "| Character: FEATURED" in result
+        assert "looks IDENTICAL whenever they are on screen" in result
+
+    def test_per_scene_presence_respected(self):
+        dna  = _make_style_dna()
+        char = _make_character()
+        scenes = self._make_scenes(2)
+        scenes[0].character_presence = "none"
+        scenes[1].character_presence = "background"
+        result = build_scene_prompts_prompt("idea", None, char, dna, scenes)
+        assert "| Character: NONE" in result
+        assert "| Character: BACKGROUND" in result
 
     def test_all_scene_descriptions_included(self):
         dna = _make_style_dna()

@@ -95,7 +95,7 @@ _SHOT_SIZE_BY_ACT: dict[str, str] = {
     "VICTORY":        "WIDE SHOT",          # triumphant wide
 }
 
-# Character placement note per shot size — appended to every visual prompt
+# Character placement note per shot size — appended when the character is in shot
 _PLACEMENT_BY_SHOT: dict[str, str] = {
     "EXTREME WIDE SHOT":   "subject is a tiny figure in the landscape, occupying less than 10% of frame height, positioned at lower-center or off-center",
     "WIDE SHOT":           "full body visible, character occupies lower third of frame, environment dominates upper two-thirds",
@@ -104,6 +104,49 @@ _PLACEMENT_BY_SHOT: dict[str, str] = {
     "MEDIUM CLOSE-UP":     "chest-and-face framing, face occupies upper half of frame, shallow depth of field f/2.0",
     "CLOSE-UP":            "face fills the frame, extreme shallow depth of field f/1.4, background fully bokeh",
 }
+
+# Composition note when the shot contains NO character — pure environment/insert
+_ENV_PLACEMENT_BY_SHOT: dict[str, str] = {
+    "EXTREME WIDE SHOT":   "environment-only composition, no people in frame, layered depth with foreground-midground-background separation",
+    "WIDE SHOT":           "environment-only composition, no people in frame, strong leading lines drawing the eye through the space",
+    "MEDIUM WIDE SHOT":    "environment detail composition, no people in frame, architectural or natural forms as the subject",
+    "MEDIUM SHOT":         "detail shot of the environment, no people in frame, textures and materials as the subject",
+    "MEDIUM CLOSE-UP":     "insert shot of a significant object or detail, no people in frame, shallow depth of field f/2.0",
+    "CLOSE-UP":            "extreme detail insert shot of an object or texture, no people in frame, macro-level sharpness on the subject",
+}
+
+
+# ── Character presence assignment ─────────────────────────────────────────────
+#
+# Cinematic coverage means the protagonist does NOT appear in every shot.
+# Character consistency = the character looks identical *whenever on screen*,
+# not that every frame is a character shot.
+
+def _assign_character_presence(act: str, shot_size: str, scene_idx: int, total: int) -> str:
+    """Return "featured" | "background" | "none" for this scene.
+
+    Defaults (user-overridable per scene in the UI):
+      - Opening extreme-wide establishing shot → pure environment ("none")
+      - Other extreme-wide / wide shots        → distant figure ("background")
+      - Medium and closer                      → character is the subject ("featured")
+    """
+    if shot_size == "EXTREME WIDE SHOT":
+        return "none" if scene_idx == 0 else "background"
+    if shot_size == "WIDE SHOT":
+        return "background"
+    return "featured"
+
+
+def _distant_character_clause(character_desc: str) -> str:
+    """Reduce a full character description to a silhouette-level distant cue.
+
+    Used for "background" presence: facial detail is invisible at that distance,
+    so only the first identifying clause (build / clothing) is kept.
+    """
+    if not character_desc:
+        return ""
+    first = character_desc.split(",")[0].split(".")[0].strip()
+    return f"{first} visible only as a small distant figure, silhouette and clothing readable, no facial detail"
 
 
 def _assign_shot_size(act: str, scene_idx: int, total: int) -> str:
@@ -141,24 +184,34 @@ def _build_visual_prompt_with_framing(
     scene_desc: str,
     camera: str,
     lighting: str,
-    character_prefix: str,
+    character_desc: str,
     skill,
+    character_presence: str = "featured",
 ) -> str:
     """Build a mechanical visual prompt that leads with shot size + placement.
 
     Structure:  [SHOT SIZE]. [Placement note]. [Scene content]. [Camera]. [Lighting].
-                [Character — after environment]. [Quality boosters].
+                [Character — after environment, only if in shot]. [Quality boosters].
+
+    character_presence gates how the character appears:
+      "featured"   → full description after the environment
+      "background" → silhouette-level distant clause only
+      "none"       → no character text; environment composition note instead
     """
-    placement = _PLACEMENT_BY_SHOT.get(shot_size, "")
-    placement_clause = f" {placement}." if placement else ""
+    char_clean = character_desc.rstrip(", ")
 
-    # Scene environment goes BEFORE character
-    if character_prefix:
-        char_clean = character_prefix.rstrip(", ")
-        core = f"{scene_desc}, {camera}, {lighting}, {char_clean}"
-    else:
+    if character_presence == "none" or not char_clean:
+        placement = _ENV_PLACEMENT_BY_SHOT.get(shot_size, "") if character_presence == "none" \
+                    else _PLACEMENT_BY_SHOT.get(shot_size, "")
         core = f"{scene_desc}, {camera}, {lighting}"
+    elif character_presence == "background":
+        placement = _PLACEMENT_BY_SHOT.get(shot_size, "")
+        core = f"{scene_desc}, {camera}, {lighting}, {_distant_character_clause(char_clean)}"
+    else:  # featured
+        placement = _PLACEMENT_BY_SHOT.get(shot_size, "")
+        core = f"{scene_desc}, {camera}, {lighting}, {char_clean}"
 
+    placement_clause = f" {placement}." if placement else ""
     base = f"{shot_size}.{placement_clause} {core}"
     return build_comfyui_positive(base, skill)
 
@@ -331,6 +384,9 @@ def _claude_options(idea: str, n_scenes: int, mood: Optional[str]) -> list[dict]
             f'  "reasoning":         one sentence on why this structure fits the idea\n'
             f'  "act_labels":        list of exactly {n_scenes} act names in UPPERCASE (e.g. HOOK, BUILD, CLIMAX, RESOLUTION)\n'
             f'  "scene_descriptions": list of exactly {n_scenes} one-sentence scene descriptions\n\n'
+            f"Write coverage like a film director: mix establishing shots, pure environment beats, "
+            f"and detail/insert shots with character moments — the protagonist must NOT appear in "
+            f"every scene description.\n\n"
             f"Respond with ONLY the JSON array. No markdown, no explanation."
         )
         msg = client.messages.create(
@@ -438,26 +494,42 @@ def _claude_visual_prompts_batch(
         client = anthropic.Anthropic(api_key=api_key)
         n = len(scenes)
 
-        scenes_text = "\n".join(
-            f"{i+1}. Act: {s['act']} | Shot: {s.get('shot_size', 'MEDIUM SHOT')}\n"
-            f"   Placement: {_PLACEMENT_BY_SHOT.get(s.get('shot_size','MEDIUM SHOT'), '')}\n"
-            f"   Scene: {s['description']}\n"
-            f"   Camera: {s['camera']}\n"
-            f"   Lighting: {s['lighting']}"
-            for i, s in enumerate(scenes)
-        )
-        char_line = f'Character (appears AFTER environment in every prompt): "{character_desc}"' if character_desc else ""
+        def _scene_lines(i: int, s: dict) -> str:
+            shot     = s.get("shot_size", "MEDIUM SHOT")
+            presence = s.get("character_presence", "featured").upper()
+            placement = (
+                _ENV_PLACEMENT_BY_SHOT.get(shot, "") if presence == "NONE"
+                else _PLACEMENT_BY_SHOT.get(shot, "")
+            )
+            return (
+                f"{i+1}. Act: {s['act']} | Shot: {shot} | Character: {presence}\n"
+                f"   Placement: {placement}\n"
+                f"   Scene: {s['description']}\n"
+                f"   Camera: {s['camera']}\n"
+                f"   Lighting: {s['lighting']}"
+            )
+
+        scenes_text = "\n".join(_scene_lines(i, s) for i, s in enumerate(scenes))
+        char_line = f'Protagonist (use ONLY in scenes marked Character: FEATURED or BACKGROUND): "{character_desc}"' if character_desc else ""
 
         user_msg = (
             f"Generate exactly {n} ComfyUI positive image-generation prompts "
-            f"for a video project.\n\n"
+            f"for a CINEMATIC video project.\n\n"
             f'Project idea: "{idea}"\n'
             f"{char_line}\n\n"
+            "CHARACTER PRESENCE — this is how real films are shot. Character consistency means "
+            "the protagonist looks IDENTICAL whenever they are on screen — NOT that they appear "
+            "in every shot. Each scene is marked:\n"
+            "  Character: FEATURED   → weave the FULL protagonist description in AFTER the environment\n"
+            "  Character: BACKGROUND → protagonist is a small distant figure; mention only silhouette,\n"
+            "                          build and clothing colour — NO facial detail\n"
+            "  Character: NONE       → pure environment / establishing / insert shot. The protagonist\n"
+            "                          must NOT appear and must NOT be mentioned at all\n\n"
             "CRITICAL RULES — read every line:\n"
             "1. BEGIN each prompt with the SHOT SIZE (e.g. 'EXTREME WIDE SHOT.', 'CLOSE-UP.') — exactly as specified\n"
-            "2. IMMEDIATELY follow with the PLACEMENT note for that shot — character position in frame\n"
+            "2. IMMEDIATELY follow with the PLACEMENT note for that shot\n"
             "3. Then describe the ENVIRONMENT and SCENE ACTION\n"
-            "4. Weave the CHARACTER description in AFTER the environment — never first\n"
+            "4. Apply the CHARACTER PRESENCE marking for that scene — full description only when FEATURED\n"
             "5. Include the exact camera move and lighting as specified\n"
             "6. Append quality-boosters and style tags at the very end\n"
             "7. Each prompt: under 150 words, single paragraph, no line breaks\n"
@@ -524,7 +596,7 @@ def _claude_video_prompts_batch(
             f"  • {c}" for c in skill.camera_vocabulary[:4]
         )
         scenes_text = "\n".join(
-            f"{i+1}. Act: {s['act']} — {s['description']}\n"
+            f"{i+1}. Act: {s['act']} | Character: {s.get('character_presence', 'featured').upper()} — {s['description']}\n"
             f"   Assigned camera: {s['camera']}"
             for i, s in enumerate(scenes)
         )
@@ -537,6 +609,10 @@ def _claude_video_prompts_batch(
             f"Camera vocabulary reference:\n{cam_examples}\n\n"
             f"Scenes:\n{scenes_text}\n\n"
             "Rules: motion only, under 60 words each, precise language.\n"
+            "Character presence per scene:\n"
+            "  FEATURED   → describe the subject's movement plus camera + environment motion\n"
+            "  BACKGROUND → the subject is a distant figure; describe their broad movement only\n"
+            "  NONE       → no person in this shot; describe ONLY camera + environmental motion\n"
             f"Return ONLY a JSON array of {n} strings."
         )
 
@@ -622,8 +698,7 @@ def generate_scenes_from_story(
     while len(scene_descs) < n:
         scene_descs.append(f"Scene {len(scene_descs)+1}: {idea}")
 
-    character_prefix = (character.description + ", ") if character else ""
-    character_desc   = character.description if character else ""
+    character_desc = character.description if character else ""
 
     # ── Step 1: build per-scene structure + mechanical prompts (always works) ──
     scene_inputs: list[dict] = []
@@ -640,20 +715,25 @@ def generate_scenes_from_story(
         # Assign narrative-aware shot size (wide/medium/close based on act + position)
         shot_size = _assign_shot_size(act, i, n)
 
+        # Decide whether the character is in this shot at all — cinematic
+        # coverage mixes establishing/insert shots with character shots.
+        presence = _assign_character_presence(act, shot_size, i, n)
+
         # Mechanical visual prompt — leads with shot size + placement directive
         # so the model frames correctly even without Claude.
         visual_prompt   = _build_visual_prompt_with_framing(
-            shot_size, desc, cam, lite, character_prefix, skill
+            shot_size, desc, cam, lite, character_desc, skill,
+            character_presence=presence,
         )
         negative_prompt = build_comfyui_negative(skill)
         video_prompt    = build_comfyui_video_prompt(
-            f"{desc}, {character_prefix.rstrip(', ')}" if character_prefix else desc,
+            f"{desc}, {character_desc}" if (character_desc and presence == "featured") else desc,
             skill, cam, style_dna.motion_style
         )
 
         scene_inputs.append({
             "act": act, "description": desc, "camera": cam, "lighting": lite,
-            "shot_size": shot_size,
+            "shot_size": shot_size, "character_presence": presence,
         })
         scenes.append(SceneState(
             scene_id        = f"scene_{i+1:02d}",
@@ -670,6 +750,7 @@ def generate_scenes_from_story(
             negative_prompt = negative_prompt,
             video_prompt    = video_prompt,
             shot_size       = shot_size,
+            character_presence = presence,
             seed            = _scene_seed(global_seed, i + 1),
             status          = "pending",
         ))

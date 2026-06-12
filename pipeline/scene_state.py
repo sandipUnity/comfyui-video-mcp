@@ -62,6 +62,13 @@ class SceneState:
     video_prompt:    str = ""   # motion-focused prompt for I2V (editable at step 6)
     shot_size:       str = ""   # e.g. "EXTREME WIDE SHOT", "MEDIUM CLOSE-UP", "CLOSE-UP"
 
+    # How the protagonist appears in this shot. Character *consistency* applies
+    # whenever they are on screen — it does not mean every shot features them.
+    #   "featured"   — character is the subject; full description injected
+    #   "background" — small/distant figure; silhouette-level cues only
+    #   "none"       — pure environment / establishing / insert shot; no character
+    character_presence: str = "featured"
+
     # ── Seed ────────────────────────────────────────────────────────────────────
     seed: int = 0  # call scene_seed() to fill this at creation time
 
@@ -128,6 +135,7 @@ class SceneState:
             "negative_prompt":      self.negative_prompt,
             "video_prompt":         self.video_prompt,
             "shot_size":            self.shot_size,
+            "character_presence":   self.character_presence,
             "seed":                 self.seed,
             "storyboard_images":    list(self.storyboard_images),
             "approved_image_path":  self.approved_image_path,
@@ -157,6 +165,7 @@ class SceneState:
             negative_prompt      = data.get("negative_prompt", ""),
             video_prompt         = data.get("video_prompt", ""),
             shot_size            = data.get("shot_size", ""),
+            character_presence   = data.get("character_presence", "featured"),
             seed                 = data.get("seed", 0),
             storyboard_images    = list(data.get("storyboard_images", [])),
             approved_image_path  = data.get("approved_image_path"),

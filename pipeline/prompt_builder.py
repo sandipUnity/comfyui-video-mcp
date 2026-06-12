@@ -56,17 +56,34 @@ def _story_block(story: dict) -> str:
     )
 
 
-def _scenes_block(scenes: list) -> str:
+def _scenes_block(scenes: list, include_presence: bool = False) -> str:
     lines = [f"SCENES ({len(scenes)} total):"]
     for s in scenes:
         shot = getattr(s, "shot_size", "") or "MEDIUM SHOT"
+        presence_part = ""
+        if include_presence:
+            presence = (getattr(s, "character_presence", "") or "featured").upper()
+            presence_part = f" | Character: {presence}"
         lines.append(
-            f"\n  Scene {s.scene_number} | Act: {s.act} | Shot: {shot}\n"
+            f"\n  Scene {s.scene_number} | Act: {s.act} | Shot: {shot}{presence_part}\n"
             f"  Description: \"{s.description}\"\n"
             f"  Camera:      \"{s.camera}\"\n"
             f"  Lighting:    \"{s.lighting}\""
         )
     return "\n".join(lines)
+
+
+# Explains the per-scene "Character:" marking to the AI. Only included when the
+# project actually has a locked character.
+_PRESENCE_RULES = """\
+CHARACTER PRESENCE — shoot like a real film. Character consistency means the
+protagonist looks IDENTICAL whenever they are on screen — it does NOT mean they
+appear in every shot. Each scene is marked with one of:
+  Character: FEATURED   → weave the FULL character description in after the environment
+  Character: BACKGROUND → protagonist is a small distant figure; mention only
+                          silhouette, build and clothing colour — no facial detail
+  Character: NONE       → pure environment / establishing / insert shot — the
+                          protagonist must NOT appear and must NOT be mentioned"""
 
 
 # ── Stage 3 — Story Options ───────────────────────────────────────────────────
@@ -125,13 +142,16 @@ RULES:
 1. Each of the 3 treatments must have a genuinely different narrative structure
 2. Act labels must be UPPERCASE (e.g. HOOK, BUILD, CLIMAX, RESOLUTION)
 3. Scene descriptions must be exactly one sentence each — visual and specific
-4. "summary" must be exactly 2 sentences
-5. "arc" must be exactly 5 emotional beats separated by →
-6. "reasoning" must be one sentence explaining why this structure fits the idea
-7. "act_labels" and "scene_descriptions" must each have exactly {n_scenes} items
-8. If reference images are attached, let them directly inform the visual style,
+4. Write coverage like a film director: mix establishing shots, pure environment
+   beats, and detail/insert shots with character moments — the protagonist must
+   NOT appear in every scene description (aim for 1-2 scenes with no character)
+5. "summary" must be exactly 2 sentences
+6. "arc" must be exactly 5 emotional beats separated by →
+7. "reasoning" must be one sentence explaining why this structure fits the idea
+8. "act_labels" and "scene_descriptions" must each have exactly {n_scenes} items
+9. If reference images are attached, let them directly inform the visual style,
    setting, and aesthetic choices in your scene descriptions
-9. Do not add any explanation, preamble, or text outside the JSON block
+10. Do not add any explanation, preamble, or text outside the JSON block
 
 RESPOND WITH ONLY THIS JSON — no text before or after:
 
@@ -229,6 +249,8 @@ def build_scene_prompts_prompt(
     char_line   = f'  Character: "{character.description}"' if character else ""
     n           = len(scenes)
     skill_notes = _get_skill_notes(style_dna)
+    has_char    = character is not None
+    presence_block = f"\n{_PRESENCE_RULES}\n" if has_char else ""
 
     visual_schema_items  = "\n    ".join(f'"Scene {i+1} visual prompt",' for i in range(n))
     video_schema_items   = "\n    ".join(f'"Scene {i+1} motion prompt",' for i in range(n))
@@ -259,21 +281,24 @@ PROJECT CONTEXT:
   Motion style: "{style_dna.motion_style if style_dna else ""}"
 
 {_style_block(style_dna)}
-
-{_scenes_block(scenes)}
+{presence_block}
+{_scenes_block(scenes, include_presence=has_char)}
 
 ━━━ VISUAL PROMPTS — {n} required ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CRITICAL COMPOSITION RULES — follow every one:
 1. BEGIN each prompt with the SHOT SIZE exactly as listed (e.g. "EXTREME WIDE SHOT.", "CLOSE-UP.")
-2. IMMEDIATELY follow with the character's POSITION IN FRAME for that shot:
+2. If the character IS in the shot (FEATURED or BACKGROUND), follow with their POSITION IN FRAME:
    - EXTREME WIDE SHOT  → "subject is a tiny figure, less than 10% of frame height, lower-center"
    - WIDE SHOT          → "full body visible in lower third, environment fills upper two-thirds"
    - MEDIUM WIDE SHOT   → "knees-up, positioned at rule-of-thirds left or right"
    - MEDIUM SHOT        → "waist-up, slightly off-center, background in soft focus"
    - MEDIUM CLOSE-UP    → "chest-and-face, face in upper half, f/2.0 shallow DOF"
    - CLOSE-UP           → "face fills frame, extreme shallow DOF f/1.4, background fully bokeh"
+   If Character: NONE, instead open with an environment composition note
+   (leading lines, layered depth, or a detail/insert subject) — NO people in frame
 3. Then describe the ENVIRONMENT and SCENE ACTION
-4. Include the character description AFTER the environment — NEVER as the first element
+4. Apply the scene's Character marking: full description only when FEATURED (always AFTER
+   the environment — never first); silhouette-level cues when BACKGROUND; nothing when NONE
 5. Include the exact camera move and lighting as specified for each scene
 6. Append these quality boosters at the end of every prompt:
    {_quality_boosters(style_dna)}
@@ -285,8 +310,10 @@ Rules:
 1. Describe ONLY motion and action — NEVER appearance (the image handles that)
 2. Include the camera move with precise speed/direction (ft/s, degrees)
 3. Include environmental motion: wind in fabric, sand shifting, crowd movement, etc.
-4. Maximum 60 words each
-5. End each prompt with exactly one pacing word: [slow] [medium] [fast] [explosive]
+4. Match the scene's Character marking: NONE → camera + environmental motion only;
+   BACKGROUND → distant figure's broad movement; FEATURED → subject action in detail
+5. Maximum 60 words each
+6. End each prompt with exactly one pacing word: [slow] [medium] [fast] [explosive]
 
 RESPOND WITH ONLY THIS JSON — no text before or after:
 
@@ -304,6 +331,9 @@ def build_single_scene_prompt(
     """Generate a copy-paste prompt to regenerate one specific scene's prompts."""
     char_line   = f'  Character: "{character.description}"' if character else ""
     skill_notes = _get_skill_notes(style_dna)
+    presence    = (getattr(scene, "character_presence", "") or "featured").upper()
+    presence_block = f"\n{_PRESENCE_RULES}\n" if character else ""
+    presence_part  = f" | Character: {presence}" if character else ""
 
     schema = f'''{{"stage": "scene_prompts",
   "result": {{
@@ -324,17 +354,20 @@ PROJECT CONTEXT:
 {char_line}
   Motion style: "{style_dna.motion_style if style_dna else ""}"
 
+{presence_block}
 SCENE TO REPROMPT:
-  Scene {scene.scene_number} | Act: {scene.act} | Shot: {getattr(scene, 'shot_size', '') or 'MEDIUM SHOT'}
+  Scene {scene.scene_number} | Act: {scene.act} | Shot: {getattr(scene, 'shot_size', '') or 'MEDIUM SHOT'}{presence_part}
   Description: "{scene.description}"
   Camera:      "{scene.camera}"
   Lighting:    "{scene.lighting}"
 
 VISUAL PROMPT RULES:
 1. BEGIN with the SHOT SIZE exactly as listed above (e.g. "WIDE SHOT.", "CLOSE-UP.")
-2. IMMEDIATELY follow with the character's position in frame for that shot size
+2. If the character is in the shot (FEATURED/BACKGROUND), follow with their position in
+   frame; if Character: NONE, open with an environment composition note — no people
 3. Describe the ENVIRONMENT and scene action next
-4. Add character description AFTER the environment
+4. Apply the Character marking: full description AFTER the environment only when FEATURED;
+   silhouette-level cues when BACKGROUND; no character at all when NONE
 5. Include the exact camera move and lighting
 6. Append: {_quality_boosters(style_dna)}
 7. Under 150 words, single line
@@ -343,8 +376,9 @@ VIDEO PROMPT RULES:
 1. Motion and action only — no appearance
 2. Camera move with speed/direction
 3. Environmental motion
-4. Max 60 words
-5. End with: [slow] [medium] [fast] [explosive]
+4. Respect the Character marking: NONE → camera + environment motion only
+5. Max 60 words
+6. End with: [slow] [medium] [fast] [explosive]
 
 RESPOND WITH ONLY THIS JSON — no text before or after:
 

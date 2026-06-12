@@ -358,17 +358,54 @@ class TestGenerateScenesPromptIntegration:
             # At least one quality booster should appear
             assert any(b in scene.visual_prompt for b in skill.quality_boosters[:3])
 
-    def test_fallback_visual_includes_character(self):
+    def test_fallback_visual_includes_character_when_featured(self):
+        """Featured scenes carry the full character description for consistency."""
         scenes = self._run(mock_visual=None, mock_video=None)
-        for scene in scenes:
+        featured = [s for s in scenes if s.character_presence == "featured"]
+        assert featured, "expected at least one featured scene"
+        for scene in featured:
             assert "gold armour" in scene.visual_prompt
 
-    def test_fallback_visual_scene_desc_comes_before_character(self):
-        """Scene description must appear before the character prefix so the
-        text-area shows something unique at the top for every scene."""
+    def test_fallback_visual_no_character_in_environment_shots(self):
+        """Scenes marked 'none' are pure environment/insert shots — the full
+        character description must NOT leak into them."""
         scenes = self._run(mock_visual=None, mock_video=None)
         char_desc = _make_character().description
-        for scene in scenes:
+        none_scenes = [s for s in scenes if s.character_presence == "none"]
+        assert none_scenes, "expected at least one character-free scene"
+        for scene in none_scenes:
+            assert char_desc[:20] not in scene.visual_prompt, (
+                f"Character leaked into a 'none' scene:\n  {scene.visual_prompt[:160]}"
+            )
+            assert "no people in frame" in scene.visual_prompt
+
+    def test_fallback_visual_background_uses_distant_clause(self):
+        """Background scenes mention only a distant silhouette-level figure,
+        never the full close-range description."""
+        scenes = self._run(mock_visual=None, mock_video=None)
+        bg_scenes = [s for s in scenes if s.character_presence == "background"]
+        assert bg_scenes, "expected at least one background scene"
+        for scene in bg_scenes:
+            assert "small distant figure" in scene.visual_prompt
+            # Full description details (facial features) must not appear
+            assert "hawk-like eyes" not in scene.visual_prompt
+
+    def test_presence_mix_is_cinematic(self):
+        """A scene list must not be 100% featured — that's the bug this guards."""
+        scenes = self._run(mock_visual=None, mock_video=None, n=4)
+        presences = {s.character_presence for s in scenes}
+        assert presences - {"featured"}, (
+            "Every scene is character-featured — expected establishing/background coverage"
+        )
+
+    def test_fallback_visual_scene_desc_comes_before_character(self):
+        """In featured scenes the scene description must appear before the
+        character so the text-area shows something unique at the top."""
+        scenes = self._run(mock_visual=None, mock_video=None)
+        char_desc = _make_character().description
+        featured = [s for s in scenes if s.character_presence == "featured"]
+        assert featured, "expected at least one featured scene"
+        for scene in featured:
             desc_pos = scene.visual_prompt.find(scene.description[:20])
             char_pos = scene.visual_prompt.find(char_desc[:20])
             assert desc_pos != -1, "scene description missing from visual_prompt"
