@@ -55,6 +55,16 @@ class TestDiscoverRealWorkflows:
         assert wf.kind == "i2v"
         assert wf.compatible, wf.reason
 
+    def test_wan22_i2v_lightx2v_is_compatible_i2v(self):
+        """New Wan 2.2 I2V LightX2V cascade — classified I2V, no extra
+        placeholders (calibrated values baked in like wan22_lightx2v)."""
+        wf = _by_name(discover_workflows(), "wan22_i2v_lightx2v_api")
+        assert wf is not None
+        assert wf.kind == "i2v", "must be I2V (has {{INPUT_IMAGE}})"
+        assert wf.compatible, wf.reason
+        # calibrated do-not-tune values are baked in, not injected
+        assert template_defaults("workflows/wan22_i2v_lightx2v_api.json") == {}
+
     def test_wan22_lightx2v_is_compatible_t2v(self):
         wf = _by_name(discover_workflows(), "wan22_lightx2v_api")
         assert wf is not None
