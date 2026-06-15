@@ -23,7 +23,7 @@ from pipeline.workflow_catalog import (
 )
 from pipeline.model_catalog import (
     detect_model_slots, options_for_slot, apply_model_overrides, slot_status,
-    ModelSlot,
+    required_node_types, missing_node_types, ModelSlot,
 )
 from pipeline.prompt_builder import (
     build_story_prompt, build_character_prompt,
@@ -69,5 +69,7 @@ __all__ = [
     "options_for_slot",
     "apply_model_overrides",
     "slot_status",
+    "required_node_types",
+    "missing_node_types",
     "ModelSlot",
 ]

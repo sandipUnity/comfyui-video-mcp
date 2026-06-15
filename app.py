@@ -31,7 +31,7 @@ from pipeline import (
     queue_video_job, get_all_statuses, download_completed_video,
     compile_montage, has_montage_support, available_backend,
     discover_workflows, save_uploaded_workflow,
-    detect_model_slots, options_for_slot, slot_status,
+    detect_model_slots, options_for_slot, slot_status, missing_node_types,
 )
 from pipeline.style_inference import Character
 from pipeline.story_generator import (
@@ -614,6 +614,19 @@ def _workflow_picker(kinds: tuple, current: str, key: str, label: str) -> str:
     chosen_info = next((wf for wf in usable if wf.path == chosen), None)
     if chosen_info and chosen_info.note:
         st.caption(f"⚙️ {chosen_info.note}")
+
+    # Pre-flight node-class check: a template can be fillable yet need a custom
+    # node this server doesn't have (→ cryptic 400 at queue time). Warn early.
+    info = _get_server_object_info()
+    if info:
+        missing = missing_node_types(chosen, info)
+        if missing:
+            st.error(
+                "⛔ This workflow needs ComfyUI node(s) your server doesn't have: "
+                + ", ".join(f"`{m}`" for m in missing)
+                + ". It will fail at queue time — install the custom node on the "
+                "server or pick another workflow."
+            )
 
     if unusable:
         with st.expander(f"ℹ️ {len(unusable)} other template(s) found but not selectable"):

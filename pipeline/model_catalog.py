@@ -90,6 +90,28 @@ def _parse_template(template_path: str | Path) -> dict:
     return wf
 
 
+def required_node_types(template_path: str | Path) -> set[str]:
+    """Return the set of ComfyUI node class_types a template uses."""
+    wf = _parse_template(template_path)
+    return {
+        node["class_type"]
+        for node in wf.values()
+        if isinstance(node, dict) and node.get("class_type")
+    }
+
+
+def missing_node_types(template_path: str | Path, object_info: dict | None) -> list[str]:
+    """Node class_types the template needs but the server does not expose.
+
+    These cause a ComfyUI 400 ``missing_node_type`` at queue time — checking
+    here lets the UI warn the user before they pick an unrunnable workflow.
+    Returns [] when *object_info* is falsy (server unreachable → can't tell).
+    """
+    if not object_info:
+        return []
+    return sorted(required_node_types(template_path) - set(object_info.keys()))
+
+
 def detect_model_slots(template_path: str | Path) -> list[ModelSlot]:
     """Return every model-file input found in a workflow template.
 

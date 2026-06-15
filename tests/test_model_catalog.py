@@ -20,6 +20,8 @@ from pipeline.model_catalog import (
     options_for_slot,
     apply_model_overrides,
     slot_status,
+    required_node_types,
+    missing_node_types,
     ModelSlot,
 )
 from pipeline.workflow_catalog import auto_template_workflow, save_uploaded_workflow
@@ -146,6 +148,34 @@ class TestApplyModelOverrides:
         assert wf[unet.node_id]["inputs"]["unet_name"] != new_model   # default first
         apply_model_overrides(wf, {unet.key: new_model})
         assert wf[unet.node_id]["inputs"]["unet_name"] == new_model    # override wins
+
+
+# ── node-type availability ────────────────────────────────────────────────────
+
+class TestNodeAvailability:
+    def test_required_node_types_real_template(self):
+        nodes = required_node_types("workflows/flux_schnell_t2i_api.json")
+        assert "CheckpointLoaderSimple" in nodes
+        assert "CLIPTextEncode" in nodes
+
+    def test_wan22_t2v_uses_empty_wan_latent(self):
+        """The node that this server actually lacks (proven by a live 400)."""
+        nodes = required_node_types("workflows/wan22_t2v_api.json")
+        assert "EmptyWanLatentVideo" in nodes
+
+    def test_missing_node_types_flags_absent_class(self):
+        # Server exposes everything EXCEPT EmptyWanLatentVideo
+        info = {n: {} for n in required_node_types("workflows/wan22_t2v_api.json")}
+        del info["EmptyWanLatentVideo"]
+        assert missing_node_types("workflows/wan22_t2v_api.json", info) == ["EmptyWanLatentVideo"]
+
+    def test_missing_node_types_empty_when_all_present(self):
+        tpl = "workflows/flux_schnell_t2i_api.json"
+        info = {n: {} for n in required_node_types(tpl)}
+        assert missing_node_types(tpl, info) == []
+
+    def test_missing_node_types_none_when_server_unreachable(self):
+        assert missing_node_types("workflows/wan22_t2v_api.json", None) == []
 
 
 # ── _parse_template robustness (model-filename special characters) ────────────
