@@ -75,6 +75,15 @@ def _scenes_block(scenes: list, include_presence: bool = False) -> str:
         if focus:
             fs = getattr(s, "focus_subject", "") or ""
             line += f"\n  Focus:       {focus.upper()} | Subject: \"{fs}\""
+        # Narrative role + hero marker + shot intent (additive; storytelling-grade
+        # guidance for the AI; pattern from OpenMontage scene_plan)
+        role = getattr(s, "narrative_role", "") or ""
+        if role:
+            hero = " ★ HERO MOMENT" if getattr(s, "hero_moment", False) else ""
+            line += f"\n  Role:        {role.upper()}{hero}"
+        intent = getattr(s, "shot_intent", "") or ""
+        if intent:
+            line += f"\n  Intent:      {intent}"
         lines.append(line)
     return "\n".join(lines)
 

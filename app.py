@@ -1469,6 +1469,9 @@ def step_5():
                                 "character_presence": getattr(s, "character_presence", "featured"),
                                 "focus":              getattr(s, "focus", "subject"),
                                 "focus_subject":      getattr(s, "focus_subject", ""),
+                                "narrative_role":     getattr(s, "narrative_role", ""),
+                                "shot_intent":        getattr(s, "shot_intent", ""),
+                                "hero_moment":        bool(getattr(s, "hero_moment", False)),
                             }
                             for s in p.scenes
                         ],
@@ -1652,6 +1655,35 @@ def step_5():
                     "fully-offline mechanical mode, click 'Rebuild from structure'."
                 ),
             )
+
+            # ── Storytelling row (pattern borrowed from OpenMontage scene_plan) ──
+            from pipeline.scene_state import VALID_NARRATIVE_ROLE
+            _role_opts = [""] + sorted(VALID_NARRATIVE_ROLE)
+            _role_cur  = getattr(scene, "narrative_role", "") or ""
+            r4c1, r4c2, r4c3 = st.columns([1.4, 4, 1])
+            chosen_role = r4c1.selectbox(
+                "Narrative role", _role_opts,
+                index=_role_opts.index(_role_cur) if _role_cur in _role_opts else 0,
+                key=f"nrole_{i}",
+                help="What JOB this scene does in the arc — drives compositing weight (hero "
+                     "moments hold longer, transitions favour cuts on payload beats).",
+            )
+            new_intent = r4c2.text_input(
+                "Shot intent (WHY this shot exists)",
+                value=getattr(scene, "shot_intent", "") or "",
+                key=f"intent_{i}",
+                placeholder="e.g. 'Isolate the cracked valve so it reads as significant'",
+            )
+            chosen_hero = r4c3.checkbox(
+                "★ Hero",
+                value=bool(getattr(scene, "hero_moment", False)),
+                key=f"hero_{i}",
+                help="Visual peak — gets extra hold time in the montage and extra craft "
+                     "attention from the AI prompts.",
+            )
+            scene.narrative_role = chosen_role
+            scene.shot_intent    = new_intent
+            scene.hero_moment    = chosen_hero
 
             new_prompt = st.text_area("Image prompt (visual_prompt)", value=scene.visual_prompt,
                                       height=80, key=f"vp_{i}")

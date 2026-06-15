@@ -43,6 +43,23 @@ VALID_FOCUS = frozenset({
     "reaction",     # a close human reaction beat (hands/eyes/silhouette); the moment, not identity
 })
 
+# What ROLE the scene plays in the story arc — independent of focus. The vocabulary
+# is inspired by OpenMontage's scene_plan.schema.json `narrative_role` enum (AGPLv3
+# project, schema concepts only — no code copied). Drives compositing weight:
+# hero_moments hold longer, transitions favour cuts on payload beats, etc.
+VALID_NARRATIVE_ROLE = frozenset({
+    "establish_context",   # set the world / time / place
+    "introduce_subject",   # first time we meet the protagonist or central thing
+    "build_tension",       # raise stakes / withhold
+    "deliver_payload",     # the revealing/answering beat
+    "transition",          # connective tissue between beats
+    "emotional_beat",      # silent or near-silent feeling moment
+    "evidence",            # proof / corroboration / specific detail
+    "comparison",          # before/after, alternative, contrast
+    "resolution",          # release of the tension
+    "call_to_action",      # close with intent
+})
+
 
 def _scene_seed(global_seed: int, scene_number: int) -> int:
     """Derive a deterministic per-scene seed from the project global seed."""
@@ -88,6 +105,16 @@ class SceneState:
     focus:         str = "subject"
     focus_subject: str = ""
 
+    # Storytelling enrichment (pattern borrowed from OpenMontage's scene_plan
+    # schema; concepts only, no code copied).
+    #   narrative_role — what JOB the scene does in the arc (see VALID_NARRATIVE_ROLE)
+    #   shot_intent    — free-text "WHY this shot exists" for the AI / future-self
+    #   hero_moment    — the visual peak of the video; gets extra hold time and
+    #                    attention from the compositor
+    narrative_role: str = ""
+    shot_intent:    str = ""
+    hero_moment:    bool = False
+
     # ── Seed ────────────────────────────────────────────────────────────────────
     seed: int = 0  # call scene_seed() to fill this at creation time
 
@@ -113,6 +140,9 @@ class SceneState:
         # Coerce (don't raise) — old saved data / AI output may carry junk focus
         if self.focus not in VALID_FOCUS:
             self.focus = "subject"
+        # narrative_role is OPTIONAL ("" allowed); coerce unknown values to ""
+        if self.narrative_role and self.narrative_role not in VALID_NARRATIVE_ROLE:
+            self.narrative_role = ""
 
     def set_status(self, status: str, error: str | None = None) -> None:
         if status not in VALID_STATUSES:
@@ -160,6 +190,9 @@ class SceneState:
             "character_presence":   self.character_presence,
             "focus":                self.focus,
             "focus_subject":        self.focus_subject,
+            "narrative_role":       self.narrative_role,
+            "shot_intent":          self.shot_intent,
+            "hero_moment":          self.hero_moment,
             "seed":                 self.seed,
             "storyboard_images":    list(self.storyboard_images),
             "approved_image_path":  self.approved_image_path,
@@ -192,6 +225,9 @@ class SceneState:
             character_presence   = data.get("character_presence", "featured"),
             focus                = data.get("focus", "subject"),
             focus_subject        = data.get("focus_subject", ""),
+            narrative_role       = data.get("narrative_role", ""),
+            shot_intent          = data.get("shot_intent", ""),
+            hero_moment          = bool(data.get("hero_moment", False)),
             seed                 = data.get("seed", 0),
             storyboard_images    = list(data.get("storyboard_images", [])),
             approved_image_path  = data.get("approved_image_path"),

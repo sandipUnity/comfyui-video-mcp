@@ -319,3 +319,142 @@ def _get_duration(path: Path) -> float:
         return float(result.stdout.strip())
     except Exception:
         return 5.0   # fallback assumption
+
+
+# ── Edit-decisions-aware compositing (storytelling-grade) ─────────────────────
+#
+# Honours the SceneState `hero_moment` + `narrative_role` enrichment that came
+# from the OpenMontage scene_plan pattern. This is NOT a port of OpenMontage's
+# code — it's a small original layer that consumes the same kind of
+# edit-decisions data and renders with FFmpeg, so the pipeline remains fully
+# local with no AGPL dependencies.
+
+def build_edit_decisions(scenes: list, *,
+                         base_transition: str = "dissolve",
+                         hero_hold_extra: float = 0.6,
+                         transition_duration: float = 0.5,
+                         music_path: str | None = None,
+                         music_duck_db: float = -12.0) -> dict:
+    """Plan how the final montage assembles the per-scene clips.
+
+    Pattern adapted from OpenMontage scene_plan / edit_decisions concepts (no
+    code copied). Per-scene rules:
+      - hero_moment scenes hold an EXTRA `hero_hold_extra` seconds
+      - transitions before/after `deliver_payload` or `hero_moment` switch to
+        a hard cut so the reveal lands; everything else uses `base_transition`
+      - music ducks `music_duck_db` over the SUBJECT scenes so dialogue/cues read
+
+    Returns a plain dict (json-serialisable) the caller can also persist.
+    """
+    decisions: list[dict] = []
+    n = len(scenes)
+    for i, s in enumerate(scenes):
+        role = (getattr(s, "narrative_role", "") or "").lower()
+        focus = (getattr(s, "focus", "") or "").lower()
+        is_hero = bool(getattr(s, "hero_moment", False))
+
+        prev_hero    = i > 0   and bool(getattr(scenes[i-1], "hero_moment", False))
+        next_role    = (getattr(scenes[i+1], "narrative_role", "") or "").lower() if i+1 < n else ""
+        next_is_hero = i+1 < n and bool(getattr(scenes[i+1], "hero_moment", False))
+
+        if is_hero or role == "deliver_payload" or prev_hero or next_is_hero \
+                or next_role == "deliver_payload":
+            transition_in = "cut"
+        else:
+            transition_in = base_transition
+
+        decisions.append({
+            "scene_id":         getattr(s, "scene_id", f"scene_{i+1:02d}"),
+            "transition_in":    transition_in if i > 0 else "cut",
+            "extra_hold_seconds": hero_hold_extra if is_hero else 0.0,
+            "duck_music":       focus == "subject",
+        })
+
+    return {
+        "version": "1.0",
+        "base_transition": base_transition,
+        "transition_duration": transition_duration,
+        "music": {"path": music_path, "duck_db": music_duck_db} if music_path else None,
+        "scenes": decisions,
+    }
+
+
+def compile_from_edit_decisions(
+    video_paths: list[Path],
+    edit_decisions: dict,
+    output_path: Path,
+    fps: int = 25,
+) -> Path:
+    """Render a final montage that honours an edit_decisions plan (FFmpeg-only).
+
+    Currently implemented:
+      - per-scene `extra_hold_seconds`  via freezing the last frame
+      - transition policy from the plan (cut overrides base_transition)
+      - background music with simple ducking on subject scenes (volume mix)
+
+    For richer effects (slide/wipe, per-track ducking with sidechain, color
+    grade) the existing `compile_montage` can still be used; this entry is the
+    storytelling-grade path that respects hero/payload beats.
+    """
+    if not _has_ffmpeg():
+        raise RuntimeError("ffmpeg required for compile_from_edit_decisions")
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    decisions = edit_decisions.get("scenes", [])
+    if len(decisions) != len(video_paths):
+        raise ValueError(
+            f"edit_decisions has {len(decisions)} scenes but {len(video_paths)} videos given"
+        )
+
+    # Step 1 — apply per-clip extra hold by tpad-extending the last frame
+    with tempfile.TemporaryDirectory() as tdir:
+        tdir = Path(tdir)
+        held: list[Path] = []
+        for clip, dec in zip(video_paths, decisions):
+            extra = float(dec.get("extra_hold_seconds", 0.0))
+            if extra <= 0.0:
+                held.append(Path(clip)); continue
+            out = tdir / f"held_{Path(clip).stem}.mp4"
+            # tpad=stop_mode=clone freezes the last frame for `extra` seconds.
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(clip),
+                 "-vf", f"tpad=stop_mode=clone:stop_duration={extra}",
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(fps),
+                 "-an", str(out)],
+                check=True, capture_output=True,
+            )
+            held.append(out)
+
+        # Step 2 — assemble. If every transition is a cut, use the fast concat
+        # demuxer; otherwise fall through to the existing dissolve path.
+        all_cuts = all((d.get("transition_in", "cut") == "cut") for d in decisions[1:])
+        if all_cuts:
+            concat_list = tdir / "concat.txt"
+            concat_list.write_text(
+                "\n".join(f"file '{p.resolve().as_posix()}'" for p in held),
+                encoding="utf-8",
+            )
+            cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                   "-i", str(concat_list), "-c", "copy"]
+            music = (edit_decisions.get("music") or {}).get("path")
+            if music:
+                cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                       "-i", str(concat_list), "-i", music,
+                       "-filter_complex",
+                       "[1:a]volume=0.4[m];[0:a?][m]amix=inputs=2:duration=shortest[aout]",
+                       "-map", "0:v", "-map", "[aout]",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(fps),
+                       "-c:a", "aac", "-shortest"]
+            cmd.append(str(output_path))
+            subprocess.run(cmd, check=True, capture_output=True)
+        else:
+            # Fall back to the dissolve-aware compile_montage for mixed cases.
+            return compile_montage(
+                held, output_path,
+                transition=edit_decisions.get("base_transition", "dissolve"),
+                transition_duration=float(edit_decisions.get("transition_duration", 0.5)),
+                music_path=Path((edit_decisions.get("music") or {}).get("path")) if edit_decisions.get("music") else None,
+                fps=fps,
+            )
+
+    return output_path

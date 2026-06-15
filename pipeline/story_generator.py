@@ -164,6 +164,47 @@ _FOCUS_FALLBACK_ORDER = ["establishing", "object", "detail", "phenomenon"]
 # Acts whose "subject" focus is narratively essential — never demoted
 _PROTECTED_SUBJECT_ACTS = {"CLIMAX", "DECISION", "CRISIS"}
 
+# Act → narrative_role (the JOB this beat does in the arc). Vocabulary mirrors
+# OpenMontage's scene_plan schema (concepts only, no code copied).
+_NARRATIVE_ROLE_BY_ACT: dict[str, str] = {
+    "HOOK": "establish_context", "BEFORE": "establish_context",
+    "ORDINARY": "establish_context", "ORDINARY1": "establish_context",
+    "ORDINARY2": "establish_context", "SETUP": "establish_context",
+    "DEPARTURE": "establish_context", "JOURNEY": "establish_context",
+    "INCITING": "introduce_subject", "CATALYST": "introduce_subject",
+    "BUILD": "build_tension", "BUILD1": "build_tension",
+    "BUILD2": "build_tension", "BUILD3": "build_tension",
+    "MIDPOINT": "build_tension", "TEST": "build_tension",
+    "TEST1": "build_tension", "TEST2": "build_tension",
+    "CHALLENGE": "build_tension", "DOUBT": "build_tension",
+    "CHANGE": "build_tension", "CHANGE1": "build_tension",
+    "CHANGE2": "build_tension", "SETBACK": "build_tension",
+    "REGROUPING": "transition",
+    "DISCOVERY": "deliver_payload", "REVELATION": "deliver_payload",
+    "INSCRIPTION": "deliver_payload", "TWIST": "deliver_payload",
+    "FIRST LIGHT": "deliver_payload", "FIRST SIGHT": "deliver_payload",
+    "WONDER": "emotional_beat", "RECKONING": "emotional_beat",
+    "SACRIFICE": "emotional_beat",
+    "CONFRONTATION": "build_tension",
+    "CRISIS": "emotional_beat",
+    "DECISION": "deliver_payload",
+    "CLIMAX": "deliver_payload",
+    "VICTORY": "resolution", "RESOLUTION": "resolution",
+    "AFTER": "resolution", "REBORN": "resolution", "CODA": "resolution",
+}
+
+# Acts that are visual peaks — get hero_moment=True so the compositor holds
+# them longer and the AI prompts get extra craft attention.
+_HERO_ACTS = frozenset({
+    "REVELATION", "DISCOVERY", "CLIMAX", "FIRST SIGHT", "FIRST LIGHT",
+    "VICTORY", "TWIST", "WONDER", "REBORN",
+})
+
+
+def _assign_narrative_role(act: str) -> str:
+    """Map an act label to OpenMontage-style narrative_role; "" if unknown."""
+    return _NARRATIVE_ROLE_BY_ACT.get(act.upper().strip(), "")
+
 
 def _assign_focus(act: str, shot_size: str, scene_idx: int, total: int) -> str:
     """Raw per-scene focus from the act label (or shot size when act unknown)."""
@@ -1072,10 +1113,33 @@ def generate_scenes_from_story(
             video_base, skill, cam, style_dna.motion_style
         )
 
+        # Narrative role + hero marker — mechanically derived from the act.
+        nrole       = _assign_narrative_role(act)
+        is_hero     = act.upper().strip() in _HERO_ACTS
+        # shot_intent: a one-liner explaining WHY this beat exists, used by AI
+        # backends as creative guidance.
+        if is_hero:
+            shot_intent = f"Visual peak: {desc.lower().split(':')[-1].strip()[:80] or 'deliver the central moment'}."
+        elif focus == "subject":
+            shot_intent = "Foreground the protagonist's action and emotional state."
+        elif focus == "establishing":
+            shot_intent = f"Establish {focus_subject or 'the world'}; orient the viewer in space."
+        elif focus == "object":
+            shot_intent = f"Isolate {focus_subject or 'the central object'} so it reads as significant."
+        elif focus == "detail":
+            shot_intent = f"Macro reveal of {focus_subject or 'a key surface'} — texture as evidence."
+        elif focus == "phenomenon":
+            shot_intent = f"Capture {focus_subject or 'the unfolding motion'} at the moment of force."
+        elif focus == "secondary":
+            shot_intent = f"Introduce {focus_subject or 'a second figure'} for contrast or conflict."
+        else:
+            shot_intent = "Hold on the moment; let the gesture do the work."
+
         scene_inputs.append({
             "act": act, "description": desc, "camera": cam, "lighting": lite,
             "shot_size": shot_size, "character_presence": presence,
             "focus": focus, "focus_subject": focus_subject,
+            "narrative_role": nrole, "shot_intent": shot_intent, "hero_moment": is_hero,
         })
         scenes.append(SceneState(
             scene_id        = f"scene_{i+1:02d}",
@@ -1095,6 +1159,9 @@ def generate_scenes_from_story(
             character_presence = presence,
             focus           = focus,
             focus_subject   = focus_subject,
+            narrative_role  = nrole,
+            shot_intent     = shot_intent,
+            hero_moment     = is_hero,
             seed            = _scene_seed(global_seed, i + 1),
             status          = "pending",
         ))

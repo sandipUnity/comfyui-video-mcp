@@ -16,7 +16,10 @@ from pipeline.i2v_engine     import generate_video
 from pipeline.utils          import fill_workflow
 from pipeline.model_checker  import check_model_availability, REQUIRED_MODELS
 from pipeline.video_queue    import queue_video_job, get_all_statuses, download_completed_video
-from pipeline.montage        import compile_montage, has_montage_support, available_backend
+from pipeline.montage        import (
+    compile_montage, has_montage_support, available_backend,
+    build_edit_decisions, compile_from_edit_decisions,
+)
 from pipeline.workflow_catalog import (
     discover_workflows, workflows_for, resolve_workflow_path, WorkflowInfo,
     auto_template_workflow, save_uploaded_workflow, template_defaults,
@@ -58,6 +61,8 @@ __all__ = [
     "compile_montage",
     "has_montage_support",
     "available_backend",
+    "build_edit_decisions",
+    "compile_from_edit_decisions",
     "discover_workflows",
     "workflows_for",
     "resolve_workflow_path",
