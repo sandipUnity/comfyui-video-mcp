@@ -32,7 +32,7 @@ from typing import Callable, Optional
 
 from comfyui_client import ComfyUIClient
 from pipeline.utils import fill_workflow
-from pipeline.workflow_catalog import resolve_workflow_path
+from pipeline.workflow_catalog import resolve_workflow_path, template_defaults
 from pipeline.model_catalog import apply_model_overrides
 
 # Default T2I workflow template — used when no workflow override is given
@@ -100,6 +100,7 @@ async def generate_image(
         height=height,
         seed=seed,
         output_prefix=timed_prefix,
+        extra=template_defaults(template),
     )
     apply_model_overrides(wf, model_overrides)
 

@@ -18,7 +18,10 @@ Never touches prompts with json.dumps() escaping — prompts go straight into th
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+
+_LEFTOVER_TOKEN_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 
 
 def fill_workflow(
@@ -34,6 +37,8 @@ def fill_workflow(
     input_image: str | None = None,
     frames: int | None = None,
     fps: int | None = None,
+    # Additional placeholder defaults, e.g. {"CFG": 5.0, "CHECKPOINT": "x.safetensors"}
+    extra: dict | None = None,
 ) -> dict:
     """Load a workflow template and inject all parameters.
 
@@ -48,6 +53,13 @@ def fill_workflow(
         input_image:      Server-side filename from upload_image() — I2V only.
         frames:           Number of frames — I2V only.
         fps:              Frames per second — I2V only.
+        extra:            Extra placeholder values keyed by bare token name
+                          (no braces), typically from
+                          ``workflow_catalog.template_defaults()`` — sampler
+                          settings ({{STEPS}}, {{CFG}}) and model files
+                          ({{CHECKPOINT}}, {{TEXT_ENCODER}}, {{VAE}}, …) that
+                          legacy templates expect. Numeric values are replaced
+                          as bare tokens; strings are injected after parsing.
 
     Returns:
         Filled workflow dict ready to pass to ``ComfyUIClient.queue_prompt()``.
@@ -67,6 +79,15 @@ def fill_workflow(
     if fps is not None:
         numeric_map["{{FPS}}"] = str(fps)
 
+    string_extras: dict[str, str] = {}
+    for token, value in (extra or {}).items():
+        if isinstance(value, bool):
+            numeric_map["{{" + token + "}}"] = "true" if value else "false"
+        elif isinstance(value, (int, float)):
+            numeric_map["{{" + token + "}}"] = str(value)
+        elif isinstance(value, str):
+            string_extras["{{" + token + "}}"] = value
+
     for placeholder, value in numeric_map.items():
         template = template.replace(placeholder, value)
 
@@ -78,6 +99,7 @@ def fill_workflow(
         "{{POSITIVE_PROMPT}}": positive_prompt,
         "{{NEGATIVE_PROMPT}}": negative_prompt,
         "{{OUTPUT_PREFIX}}":   output_prefix,
+        **string_extras,
     }
     if input_image is not None:
         string_map["{{INPUT_IMAGE}}"] = input_image
@@ -90,4 +112,17 @@ def fill_workflow(
                 node[key] = string_map[val]
 
     _inject(wf)
+
+    # Guard: a template selected/persisted before it was validated may still
+    # carry placeholders the pipeline couldn't fill. Fail loudly here rather
+    # than queue a literal "{{CHECKPOINT}}" string to ComfyUI (which produces
+    # a confusing server-side error).
+    leftover = sorted(set(_LEFTOVER_TOKEN_RE.findall(json.dumps(wf))))
+    if leftover:
+        raise ValueError(
+            "Workflow template still contains unfilled placeholders after fill: "
+            + ", ".join(leftover)
+            + ". Add the missing values to the matching models: entry in "
+            "config.yaml, or choose a different workflow."
+        )
     return wf

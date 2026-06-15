@@ -131,6 +131,43 @@ class TestApplyModelOverrides:
         wf = {"1": {"inputs": {"m": "a"}}}
         assert apply_model_overrides(wf, None) == wf
 
+    def test_user_override_beats_config_default_end_to_end(self):
+        """The user's per-slot pick must win over the config.yaml default —
+        apply_model_overrides runs AFTER fill_workflow(extra=defaults)."""
+        from pipeline.utils import fill_workflow
+        from pipeline.workflow_catalog import template_defaults
+        tpl = "workflows/wan22_t2v_api.json"
+        wf = fill_workflow(tpl, positive_prompt="p", negative_prompt="n",
+                           width=64, height=64, seed=1, output_prefix="x",
+                           frames=9, fps=8, extra=template_defaults(tpl))
+        unet = next(s for s in detect_model_slots(tpl) if s.field == "unet_name")
+        # config default is the high-noise UNET; override to low-noise
+        new_model = "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"
+        assert wf[unet.node_id]["inputs"]["unet_name"] != new_model   # default first
+        apply_model_overrides(wf, {unet.key: new_model})
+        assert wf[unet.node_id]["inputs"]["unet_name"] == new_model    # override wins
+
+
+# ── _parse_template robustness (model-filename special characters) ────────────
+
+class TestParseTemplateRobustness:
+    def test_backslash_string_default_does_not_break_json(self, tmp_path, monkeypatch):
+        """Windows model filenames contain backslashes (e.g. a sharded Gemma
+        checkpoint 'subdir\\model-00001.safetensors'). String defaults must be
+        injected AFTER json.loads, never via a raw pre-parse text-replace."""
+        import pipeline.model_catalog as mc
+        wf_file = tmp_path / "wf.json"
+        wf_file.write_text(
+            '{"1": {"class_type": "CheckpointLoaderSimple", '
+            '"inputs": {"ckpt_name": "{{CHECKPOINT}}"}}}',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(mc, "template_defaults",
+                            lambda p: {"CHECKPOINT": r"subdir\model-00001.safetensors"})
+        slots = mc.detect_model_slots(wf_file)   # must not raise JSONDecodeError
+        assert len(slots) == 1
+        assert slots[0].current == r"subdir\model-00001.safetensors"
+
 
 # ── auto_template_workflow ────────────────────────────────────────────────────
 

@@ -19,7 +19,7 @@ from pipeline.video_queue    import queue_video_job, get_all_statuses, download_
 from pipeline.montage        import compile_montage, has_montage_support, available_backend
 from pipeline.workflow_catalog import (
     discover_workflows, workflows_for, resolve_workflow_path, WorkflowInfo,
-    auto_template_workflow, save_uploaded_workflow,
+    auto_template_workflow, save_uploaded_workflow, template_defaults,
 )
 from pipeline.model_catalog import (
     detect_model_slots, options_for_slot, apply_model_overrides, slot_status,
@@ -64,6 +64,7 @@ __all__ = [
     "WorkflowInfo",
     "auto_template_workflow",
     "save_uploaded_workflow",
+    "template_defaults",
     "detect_model_slots",
     "options_for_slot",
     "apply_model_overrides",

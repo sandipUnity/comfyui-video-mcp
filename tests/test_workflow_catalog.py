@@ -18,6 +18,7 @@ from pipeline.workflow_catalog import (
     discover_workflows,
     workflows_for,
     resolve_workflow_path,
+    template_defaults,
     WorkflowInfo,
     PROJECT_ROOT,
     SUPPORTED_PLACEHOLDERS,
@@ -60,15 +61,24 @@ class TestDiscoverRealWorkflows:
         assert wf.kind == "t2v"
         assert wf.compatible, wf.reason
 
-    def test_legacy_templates_marked_incompatible(self):
-        """Templates with {{CFG}}/{{STEPS}}/{{CHECKPOINT}} need the legacy
-        injector — they must be excluded from the new pipeline's pickers."""
+    def test_legacy_templates_compatible_via_config_defaults(self):
+        """Templates with {{CFG}}/{{STEPS}}/{{CHECKPOINT}} become compatible
+        when a config.yaml models: entry supplies the values."""
         workflows = discover_workflows()
-        for name in ("animatediff_api", "wan22_t2v_api", "ltxvideo_api", "svd_api"):
+        for name in ("animatediff_api", "wan22_t2v_api", "ltxvideo_api", "ltxvideo_camera_api"):
             wf = _by_name(workflows, name)
             assert wf is not None, f"{name} not discovered"
-            assert not wf.compatible, f"{name} should be incompatible"
-            assert wf.reason, f"{name} must carry a human-readable reason"
+            assert wf.compatible, f"{name} should be compatible via defaults: {wf.reason}"
+            assert "config.yaml" in wf.note
+
+    def test_templates_without_config_entry_stay_incompatible(self):
+        workflows = discover_workflows()
+        wan21 = _by_name(workflows, "wan21_api")     # no models: entry
+        svd   = _by_name(workflows, "svd_api")       # no positive prompt
+        assert wan21 is not None and not wan21.compatible
+        assert "config.yaml" in wan21.reason         # reason tells the user the fix
+        assert svd is not None and not svd.compatible
+        assert "POSITIVE_PROMPT" in svd.reason
 
     def test_workflows_for_filters_kind_and_compatibility(self):
         t2i = workflows_for("t2i")
@@ -127,11 +137,97 @@ class TestDiscoverSynthetic:
         assert "not valid JSON" in wf.reason
 
     def test_unsupported_placeholder_is_incompatible(self, tmp_path):
+        # {{CHECKPOINT}} has no config entry for this template and no pipeline
+        # fallback — must stay incompatible with an actionable reason
+        self._write(tmp_path, "needs_ckpt.json",
+                    '{"1": {"inputs": {"text": "{{POSITIVE_PROMPT}}", "ckpt_name": "{{CHECKPOINT}}"}}}')
+        wf = discover_workflows(tmp_path)[0]
+        assert not wf.compatible
+        assert "{{CHECKPOINT}}" in wf.reason
+
+    def test_cfg_only_template_compatible_via_pipeline_fallback(self, tmp_path):
+        # CFG/STEPS are generic sampler knobs — pipeline defaults cover them
         self._write(tmp_path, "needs_cfg.json",
                     '{"1": {"inputs": {"text": "{{POSITIVE_PROMPT}}", "cfg": {{CFG}}}}}')
         wf = discover_workflows(tmp_path)[0]
-        assert not wf.compatible
-        assert "{{CFG}}" in wf.reason
+        assert wf.compatible, wf.reason
+
+
+# ── template_defaults ─────────────────────────────────────────────────────────
+
+class TestTemplateDefaults:
+    def test_wan22_defaults_from_model_entry(self):
+        d = template_defaults("workflows/wan22_t2v_api.json")
+        assert d["CHECKPOINT"].startswith("wan2.2_t2v_high")
+        assert d["CFG"] == 5.0
+        assert d["STEPS"] == 20
+
+    def test_first_entry_owns_defaults_not_variants(self):
+        """ltxvideo_fast shares the workflow but its cfg=1.0/steps=6 are
+        calibrated to a distilled LoRA the base template doesn't load —
+        the base ltxvideo entry (pipeline fallbacks 3.0/20) must win."""
+        d = template_defaults("workflows/ltxvideo_api.json")
+        assert d["CFG"] == 3.0
+        assert d["STEPS"] == 20
+
+    def test_supported_template_has_no_defaults(self):
+        assert template_defaults("workflows/flux_schnell_t2i_api.json") == {}
+
+    def test_fill_workflow_with_defaults_leaves_no_tokens(self):
+        import json as _json
+        import re as _re
+        from pipeline.utils import fill_workflow
+        tpl = "workflows/wan22_t2v_api.json"
+        wf = fill_workflow(tpl, positive_prompt="p — “q”", negative_prompt="n",
+                           width=64, height=64, seed=1, output_prefix="x",
+                           frames=9, fps=8, extra=template_defaults(tpl))
+        assert not _re.findall(r"\{\{[A-Z_]+\}\}", _json.dumps(wf))
+
+    def test_calibrated_model_has_no_injected_defaults(self):
+        """wan22_lightx2v's steps/cfg/shift are baked into the template JSON and
+        must NEVER be injected — template_defaults must stay empty so the
+        do-not-tune values can't be overwritten via config."""
+        assert template_defaults("workflows/wan22_lightx2v_api.json") == {}
+
+    def test_ltxvideo_camera_fills_completely(self):
+        """CAMERA_LORA (string) + CAMERA_LORA_STRENGTH (bare float) must both
+        fill — exercises the mixed string/numeric extra path end-to-end."""
+        import json as _json
+        import re as _re
+        from pipeline.utils import fill_workflow
+        tpl = "workflows/ltxvideo_camera_api.json"
+        d = template_defaults(tpl)
+        assert "CAMERA_LORA" in d and "CAMERA_LORA_STRENGTH" in d
+        wf = fill_workflow(tpl, positive_prompt="p", negative_prompt="n",
+                           width=64, height=64, seed=1, output_prefix="x",
+                           frames=9, fps=8, extra=d)
+        assert not _re.findall(r"\{\{[A-Z_]+\}\}", _json.dumps(wf))
+
+
+# ── fill_workflow leftover-token guard ────────────────────────────────────────
+
+class TestFillWorkflowLeftoverGuard:
+    def _write(self, tmp_path, content):
+        f = tmp_path / "wf.json"
+        f.write_text(content, encoding="utf-8")
+        return f
+
+    def test_raises_on_unfilled_placeholder(self, tmp_path):
+        from pipeline.utils import fill_workflow
+        f = self._write(tmp_path,
+            '{"1": {"inputs": {"text": "{{POSITIVE_PROMPT}}", "ckpt": "{{CHECKPOINT}}"}}}')
+        with pytest.raises(ValueError, match="unfilled placeholders"):
+            fill_workflow(f, positive_prompt="p", negative_prompt="n",
+                          width=1, height=1, seed=1, output_prefix="x")
+
+    def test_no_raise_when_extra_supplies_value(self, tmp_path):
+        from pipeline.utils import fill_workflow
+        f = self._write(tmp_path,
+            '{"1": {"inputs": {"text": "{{POSITIVE_PROMPT}}", "ckpt": "{{CHECKPOINT}}"}}}')
+        wf = fill_workflow(f, positive_prompt="p", negative_prompt="n",
+                           width=1, height=1, seed=1, output_prefix="x",
+                           extra={"CHECKPOINT": r"has\backslash.safetensors"})
+        assert wf["1"]["inputs"]["ckpt"] == r"has\backslash.safetensors"
 
 
 # ── resolve_workflow_path ─────────────────────────────────────────────────────

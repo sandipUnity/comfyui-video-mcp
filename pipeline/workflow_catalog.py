@@ -49,11 +49,104 @@ class WorkflowInfo:
     placeholders: list[str] = field(default_factory=list)
     compatible: bool = False
     reason: str = ""          # human-readable reason when not compatible
+    note: str = ""            # extra info, e.g. "sampler/model defaults from config.yaml"
 
     @property
     def label(self) -> str:
         """Display label for UI selectboxes."""
         return self.name
+
+
+# ── config.yaml defaults for legacy-template placeholders ─────────────────────
+#
+# Legacy templates carry sampler/model placeholders ({{CFG}}, {{STEPS}},
+# {{CHECKPOINT}}, …) that the per-model entries in config.yaml already define.
+# Resolving them as defaults makes every diffusion model with a config entry
+# drivable by the new pipeline — and the UI's model-slot dropdowns can then
+# swap the checkpoint for ANY model installed on the server.
+
+# placeholder token → config keys tried in order (per model entry)
+_DEFAULT_KEY_MAP: dict[str, tuple[str, ...]] = {
+    "CHECKPOINT":            ("checkpoint",),
+    "TEXT_ENCODER":          ("text_encoder",),
+    "VAE":                   ("vae",),
+    "MOTION_MODULE":         ("motion_module",),
+    "CAMERA_LORA":           ("camera_lora_fallback",),
+    "CAMERA_LORA_STRENGTH":  ("camera_lora_strength",),
+    "STEPS":                 ("steps_override", "steps"),
+    "CFG":                   ("cfg_override", "cfg"),
+}
+# pipeline-level fallbacks when no model entry defines the value
+_PIPELINE_FALLBACK_KEYS: dict[str, str] = {
+    "STEPS": "default_steps",
+    "CFG":   "default_cfg",
+}
+
+
+def _load_config(workflows_dir: Path) -> dict:
+    """Load config.yaml from the project root (next to workflows/). Best-effort."""
+    cfg_path = workflows_dir.parent / "config.yaml"
+    if not cfg_path.exists():
+        cfg_path = PROJECT_ROOT / "config.yaml"
+    try:
+        import yaml
+        return yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def template_defaults(template_path: str | Path,
+                      config: dict | None = None) -> dict:
+    """Resolve placeholder defaults for a template from config.yaml.
+
+    Finds model entries whose ``workflow`` key points at this template and maps
+    their values onto the template's extra placeholders (see _DEFAULT_KEY_MAP).
+    STEPS/CFG fall back to the pipeline-level defaults. Returns a dict keyed by
+    bare token name, ready for ``fill_workflow(extra=...)`` — empty if the
+    template has no extra placeholders or nothing resolves.
+    """
+    p = Path(template_path)
+    rel = p.as_posix() if not p.is_absolute() else None
+    if rel is None:
+        try:
+            rel = p.relative_to(PROJECT_ROOT).as_posix()
+        except ValueError:
+            rel = p.as_posix()
+
+    try:
+        raw = resolve_workflow_path(template_path).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    needed = set(_PLACEHOLDER_RE.findall(raw)) - SUPPORTED_PLACEHOLDERS
+    if not needed:
+        return {}
+
+    if config is None:
+        config = _load_config(resolve_workflow_path(template_path).parent)
+    models   = config.get("models") or {}
+    pipeline = config.get("pipeline") or {}
+
+    # The FIRST model entry pointing at this template owns its defaults.
+    # (Variant entries like ltxvideo_fast share the workflow but carry sampler
+    # values calibrated to extra LoRAs the base template doesn't load — mixing
+    # values across entries would corrupt the schedule.)
+    entry = next(
+        (e for e in models.values()
+         if isinstance(e, dict) and Path(str(e.get("workflow", ""))).as_posix() == rel),
+        {},
+    )
+
+    defaults: dict = {}
+    for token in sorted(needed):
+        for key in _DEFAULT_KEY_MAP.get(token, ()):
+            if key in entry and entry[key] is not None:
+                defaults[token] = entry[key]
+                break
+        if token not in defaults and token in _PIPELINE_FALLBACK_KEYS:
+            value = pipeline.get(_PIPELINE_FALLBACK_KEYS[token])
+            if value is not None:
+                defaults[token] = value
+    return defaults
 
 
 def _classify(placeholders: set[str]) -> str:
@@ -64,22 +157,35 @@ def _classify(placeholders: set[str]) -> str:
     return "t2i"
 
 
-def _check_compatibility(raw_text: str, placeholders: set[str]) -> tuple[bool, str]:
-    """Return (compatible, reason). Mirrors what fill_workflow() will do."""
+def _check_compatibility(raw_text: str, placeholders: set[str],
+                         defaults: dict | None = None) -> tuple[bool, str]:
+    """Return (compatible, reason). Mirrors what fill_workflow() will do.
+
+    ``defaults`` (from template_defaults()) covers extra placeholders the
+    template uses — a template is compatible when every placeholder is either
+    natively supported or resolved by a config.yaml default.
+    """
+    defaults = defaults or {}
     if "POSITIVE_PROMPT" not in placeholders:
         return False, "no {{POSITIVE_PROMPT}} placeholder — prompts cannot be injected"
 
-    unsupported = sorted(placeholders - SUPPORTED_PLACEHOLDERS)
+    unsupported = sorted(placeholders - SUPPORTED_PLACEHOLDERS - set(defaults))
     if unsupported:
         tokens = ", ".join("{{" + p + "}}" for p in unsupported)
-        return False, f"uses placeholders the pipeline cannot fill: {tokens}"
+        return False, (
+            f"uses placeholders the pipeline cannot fill: {tokens} "
+            f"(add the value to the matching models: entry in config.yaml)"
+        )
 
     # Dry-run the same numeric substitution fill_workflow() performs, then
     # confirm the result is valid JSON. String placeholders are quoted in the
-    # template, so they parse as-is.
+    # template, so they parse as-is; numeric defaults appear as bare tokens.
     text = raw_text
     for token in ("WIDTH", "HEIGHT", "SEED", "FRAMES", "FPS"):
         text = text.replace("{{" + token + "}}", "1")
+    for token, value in defaults.items():
+        if isinstance(value, (int, float, bool)) and not isinstance(value, str):
+            text = text.replace("{{" + token + "}}", "1")
     try:
         json.loads(text)
     except json.JSONDecodeError as e:
@@ -96,6 +202,7 @@ def discover_workflows(workflows_dir: str | Path | None = None) -> list[Workflow
     """
     wf_dir = Path(workflows_dir) if workflows_dir else WORKFLOWS_DIR
     results: list[WorkflowInfo] = []
+    config = _load_config(wf_dir)
 
     for fp in sorted(wf_dir.glob("*.json")):
         # Relative posix path when under the project root; absolute posix otherwise
@@ -114,13 +221,18 @@ def discover_workflows(workflows_dir: str | Path | None = None) -> list[Workflow
             continue
 
         placeholders = set(_PLACEHOLDER_RE.findall(raw))
-        kind = _classify(placeholders)
-        compatible, reason = _check_compatibility(raw, placeholders)
+        kind     = _classify(placeholders)
+        defaults = template_defaults(fp, config=config)
+        compatible, reason = _check_compatibility(raw, placeholders, defaults)
+        note = ""
+        if compatible and defaults:
+            note = ("sampler/model defaults from config.yaml: "
+                    + ", ".join(f"{k}={v}" for k, v in sorted(defaults.items())))
 
         results.append(WorkflowInfo(
             path=rel, name=fp.stem, kind=kind,
             placeholders=sorted(placeholders),
-            compatible=compatible, reason=reason,
+            compatible=compatible, reason=reason, note=note,
         ))
 
     return results

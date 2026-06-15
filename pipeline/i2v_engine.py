@@ -37,7 +37,7 @@ from typing import Callable, Optional
 
 from comfyui_client import ComfyUIClient
 from pipeline.utils import fill_workflow
-from pipeline.workflow_catalog import resolve_workflow_path
+from pipeline.workflow_catalog import resolve_workflow_path, template_defaults
 from pipeline.model_catalog import apply_model_overrides
 
 # Default I2V workflow template — used when no workflow override is given
@@ -123,6 +123,7 @@ async def generate_video(
         input_image=server_filename,
         frames=frames,
         fps=fps,
+        extra=template_defaults(template),
     )
     apply_model_overrides(wf, model_overrides)
 

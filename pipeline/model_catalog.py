@@ -25,7 +25,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline.workflow_catalog import resolve_workflow_path
+from pipeline.workflow_catalog import resolve_workflow_path, template_defaults
 
 # File extensions that identify a model-file input value
 MODEL_FILE_EXTS = (".safetensors", ".sft", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx")
@@ -53,11 +53,41 @@ class ModelSlot:
 
 
 def _parse_template(template_path: str | Path) -> dict:
-    """Load a workflow template, dummy-filling numeric placeholders so it parses."""
+    """Load a workflow template, filling placeholders so it parses.
+
+    Numeric placeholders get dummy values; extra placeholders ({{CHECKPOINT}},
+    {{CFG}}, …) resolve to their config.yaml defaults so legacy templates'
+    model slots are detected with real filenames the user can then override.
+    """
     text = resolve_workflow_path(template_path).read_text(encoding="utf-8")
+    defaults = template_defaults(template_path)
+
+    # Numeric/bool placeholders are bare in the JSON → must be replaced before parse.
     for token in ("WIDTH", "HEIGHT", "SEED", "FRAMES", "FPS"):
         text = text.replace("{{" + token + "}}", "1")
-    return json.loads(text)
+    string_defaults: dict[str, str] = {}
+    for token, value in defaults.items():
+        if isinstance(value, bool):
+            text = text.replace("{{" + token + "}}", "true" if value else "false")
+        elif isinstance(value, (int, float)):
+            text = text.replace("{{" + token + "}}", str(value))
+        elif isinstance(value, str):
+            string_defaults["{{" + token + "}}"] = value
+
+    wf = json.loads(text)
+
+    # String defaults injected AFTER parse — model filenames may contain
+    # backslashes (e.g. "subdir\\model.safetensors") that a raw pre-parse
+    # text-replace would turn into invalid JSON. Mirrors fill_workflow().
+    if string_defaults:
+        def _inject(node: dict) -> None:
+            for key, val in node.items():
+                if isinstance(val, dict):
+                    _inject(val)
+                elif isinstance(val, str) and val in string_defaults:
+                    node[key] = string_defaults[val]
+        _inject(wf)
+    return wf
 
 
 def detect_model_slots(template_path: str | Path) -> list[ModelSlot]:

@@ -611,6 +611,10 @@ def _workflow_picker(kinds: tuple, current: str, key: str, label: str) -> str:
              "Use “Add a workflow” below to import one from your ComfyUI.",
     )
 
+    chosen_info = next((wf for wf in usable if wf.path == chosen), None)
+    if chosen_info and chosen_info.note:
+        st.caption(f"⚙️ {chosen_info.note}")
+
     if unusable:
         with st.expander(f"ℹ️ {len(unusable)} other template(s) found but not selectable"):
             for wf in unusable:
