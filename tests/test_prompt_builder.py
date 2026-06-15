@@ -354,6 +354,22 @@ class TestBuildScenePromptsPrompt:
         assert "| Character: NONE" in result
         assert "| Character: BACKGROUND" in result
 
+    def test_focus_rules_always_included(self):
+        """The PER-SCENE FOCUS guidance is present even with no character."""
+        dna = _make_style_dna()
+        result = build_scene_prompts_prompt("idea", None, None, dna, self._make_scenes(2))
+        assert "PER-SCENE FOCUS" in result
+
+    def test_focus_line_present_when_scene_has_focus(self):
+        dna = _make_style_dna()
+        scenes = self._make_scenes(2)
+        scenes[0].focus = "object"
+        scenes[0].focus_subject = "a cracked brass valve"
+        result = build_scene_prompts_prompt("idea", None, None, dna, scenes)
+        assert "Focus:" in result
+        assert "OBJECT" in result
+        assert "a cracked brass valve" in result
+
     def test_all_scene_descriptions_included(self):
         dna = _make_style_dna()
         scenes = self._make_scenes(3)

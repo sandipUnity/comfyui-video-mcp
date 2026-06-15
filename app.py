@@ -1432,6 +1432,10 @@ def step_5():
     with col_dur:
         total_s = len(p.scenes) * 5
         st.metric("Total duration", f"{total_s}s", delta=f"{len(p.scenes)} scenes × 5s")
+        if p.scenes:
+            n_subj = sum(1 for s in p.scenes if getattr(s, "focus", "subject") == "subject")
+            st.caption(f"🎯 Focus coverage: **{n_subj}/{len(p.scenes)}** character-focused "
+                       f"· {len(p.scenes) - n_subj} subject/environment shots")
 
     # ── MCP Auto: batch prompt enhancement ───────────────────────────────────
     if mode == "mcp" and p.scenes:
@@ -1463,6 +1467,8 @@ def step_5():
                                 "lighting":           s.lighting,
                                 "shot_size":          s.shot_size,
                                 "character_presence": getattr(s, "character_presence", "featured"),
+                                "focus":              getattr(s, "focus", "subject"),
+                                "focus_subject":      getattr(s, "focus_subject", ""),
                             }
                             for s in p.scenes
                         ],
@@ -1602,23 +1608,48 @@ def step_5():
                 st.rerun()
             new_desc = r1c3.text_input("Description", value=scene.description, key=f"desc_{i}")
 
-            r2c1, r2c2, r2c3 = st.columns([2, 2, 1])
+            r2c1, r2c2 = st.columns(2)
             cam_cur = min(scene.camera_index, len(cam_opts) - 1)
             lit_cur = min(scene.lighting_index, len(lit_opts) - 1)
             chosen_cam = r2c1.selectbox("Camera", cam_opts, index=cam_cur, key=f"cam_{i}")
             chosen_lit = r2c2.selectbox("Lighting", lit_opts, index=lit_cur, key=f"lit_{i}")
+
+            # ── Focus row — what the shot is ABOUT (fixes character-centric output) ──
+            r3c1, r3c2, r3c3 = st.columns([1.4, 2.6, 1])
+            _focus_opts = ["subject", "establishing", "secondary", "object", "detail",
+                           "phenomenon", "reaction"]
+            _foc_cur = getattr(scene, "focus", "subject")
+            chosen_focus = r3c1.selectbox(
+                "Focus", _focus_opts,
+                index=_focus_opts.index(_foc_cur) if _foc_cur in _focus_opts else 0,
+                key=f"focus_{i}",
+                help=(
+                    "What this shot is ABOUT. 'subject' = the protagonist is the focus; "
+                    "the others make the shot about a place / figure / prop / texture / "
+                    "event so the video isn't character-centric. Focus drives 'Character "
+                    "in shot' below."
+                ),
+            )
+            new_focsub = r3c2.text_input(
+                "Focus subject (what fills the frame)",
+                value=getattr(scene, "focus_subject", ""), key=f"focsub_{i}",
+                help="The concrete thing the shot frames, e.g. 'a cracked brass valve', "
+                     "'wind tearing across the dunes'. Used for non-'subject' focus.",
+            )
+            # Focus drives the default presence; the box below is a manual override.
+            from pipeline.story_generator import _derive_presence_from_focus
+            _focus_default_pres = _derive_presence_from_focus(chosen_focus, scene.shot_size)
             _presence_opts = ["featured", "background", "none"]
-            _pres_cur = getattr(scene, "character_presence", "featured")
-            chosen_pres = r2c3.selectbox(
+            _pres_cur = getattr(scene, "character_presence", _focus_default_pres)
+            chosen_pres = r3c3.selectbox(
                 "Character in shot", _presence_opts,
                 index=_presence_opts.index(_pres_cur) if _pres_cur in _presence_opts else 0,
                 key=f"pres_{i}",
                 help=(
-                    "featured — character is the subject (full description injected) · "
-                    "background — distant figure, silhouette only · "
-                    "none — pure environment/insert shot, no character. "
-                    "After changing this, use the AI re-prompt below (or Enhance all) "
-                    "to rebuild the prompts."
+                    "Override how the protagonist appears. Normally derived from Focus "
+                    "(subject→featured, environment/object/detail→none). "
+                    "After changing Focus/this, use the AI re-prompt below — or, in the "
+                    "fully-offline mechanical mode, click 'Rebuild from structure'."
                 ),
             )
 
@@ -1634,8 +1665,40 @@ def step_5():
             scene.lighting_index = lit_idx
             scene.camera         = skill.camera_vocabulary[cam_idx]
             scene.lighting       = skill.lighting_vocabulary[lit_idx]
+            scene.focus          = chosen_focus
+            scene.focus_subject  = new_focsub.strip()
+            # Manual presence override wins only when it differs from the focus default
             scene.character_presence = chosen_pres
             scene.visual_prompt  = new_prompt
+
+            # Fully-offline rebuild: regenerate this scene's prompts from structure
+            # (focus + presence) with NO AI/API — the local-only path.
+            if st.button("🔧 Rebuild prompt from structure (offline)", key=f"rebuild_{i}",
+                         help="Regenerate the image & motion prompts from the current "
+                              "focus/camera/lighting using the built-in engine — no AI, no API."):
+                from pipeline.story_generator import (
+                    _build_visual_prompt_with_framing, build_comfyui_video_prompt,
+                    build_comfyui_negative,
+                )
+                cdesc = p.character.description if p.character else ""
+                scene.visual_prompt = _build_visual_prompt_with_framing(
+                    scene.shot_size or "MEDIUM SHOT", scene.description, scene.camera,
+                    scene.lighting, cdesc, skill,
+                    focus=scene.focus, focus_subject=scene.focus_subject,
+                    character_presence=scene.character_presence,
+                )
+                scene.negative_prompt = build_comfyui_negative(skill)
+                if scene.focus == "subject" and cdesc:
+                    vbase = f"{scene.description}, {cdesc}"
+                elif scene.focus_subject:
+                    vbase = f"{scene.focus_subject}, {scene.description}"
+                else:
+                    vbase = scene.description
+                scene.video_prompt = build_comfyui_video_prompt(
+                    vbase, skill, scene.camera, p.style_dna.motion_style,
+                )
+                save()
+                st.rerun()
             if not scene.video_prompt or scene.video_prompt == scene.description:
                 scene.video_prompt = new_desc  # keep in sync until step 6
 

@@ -31,6 +31,18 @@ VALID_STATUSES = frozenset({
     "failed",
 })
 
+# Per-scene AREA OF FOCUS — what the shot is *about*. Only "subject" makes the
+# protagonist the main subject; the rest keep videos from being character-centric.
+VALID_FOCUS = frozenset({
+    "subject",      # the protagonist IS the focus (fully foregrounds the locked character)
+    "establishing", # the world/location is the subject; no single human dominates
+    "secondary",    # a non-protagonist person/figure/crowd is the focus
+    "object",       # a prop/artifact/product/vehicle/structure is the focus
+    "detail",       # a macro texture/surface/material insert is the focus
+    "phenomenon",   # an action/force/atmospheric event is the focus (fire, water, light, dust)
+    "reaction",     # a close human reaction beat (hands/eyes/silhouette); the moment, not identity
+})
+
 
 def _scene_seed(global_seed: int, scene_number: int) -> int:
     """Derive a deterministic per-scene seed from the project global seed."""
@@ -69,6 +81,13 @@ class SceneState:
     #   "none"       — pure environment / establishing / insert shot; no character
     character_presence: str = "featured"
 
+    # Area of focus / subject of this shot (see VALID_FOCUS). character_presence
+    # is normally a projection of this: "subject" → featured, environment types
+    # → none. focus_subject is the concrete frameable noun phrase for non-subject
+    # shots (e.g. "a cracked stone archway"); empty for "subject" focus.
+    focus:         str = "subject"
+    focus_subject: str = ""
+
     # ── Seed ────────────────────────────────────────────────────────────────────
     seed: int = 0  # call scene_seed() to fill this at creation time
 
@@ -91,6 +110,9 @@ class SceneState:
     def __post_init__(self) -> None:
         if self.status not in VALID_STATUSES:
             raise ValueError(f"Invalid status '{self.status}'. Must be one of {VALID_STATUSES}")
+        # Coerce (don't raise) — old saved data / AI output may carry junk focus
+        if self.focus not in VALID_FOCUS:
+            self.focus = "subject"
 
     def set_status(self, status: str, error: str | None = None) -> None:
         if status not in VALID_STATUSES:
@@ -136,6 +158,8 @@ class SceneState:
             "video_prompt":         self.video_prompt,
             "shot_size":            self.shot_size,
             "character_presence":   self.character_presence,
+            "focus":                self.focus,
+            "focus_subject":        self.focus_subject,
             "seed":                 self.seed,
             "storyboard_images":    list(self.storyboard_images),
             "approved_image_path":  self.approved_image_path,
@@ -166,6 +190,8 @@ class SceneState:
             video_prompt         = data.get("video_prompt", ""),
             shot_size            = data.get("shot_size", ""),
             character_presence   = data.get("character_presence", "featured"),
+            focus                = data.get("focus", "subject"),
+            focus_subject        = data.get("focus_subject", ""),
             seed                 = data.get("seed", 0),
             storyboard_images    = list(data.get("storyboard_images", [])),
             approved_image_path  = data.get("approved_image_path"),

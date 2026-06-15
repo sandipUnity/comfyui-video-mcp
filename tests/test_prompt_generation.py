@@ -359,12 +359,15 @@ class TestGenerateScenesPromptIntegration:
             assert any(b in scene.visual_prompt for b in skill.quality_boosters[:3])
 
     def test_fallback_visual_includes_character_when_featured(self):
-        """Featured scenes carry the full character description for consistency."""
-        scenes = self._run(mock_visual=None, mock_video=None)
-        featured = [s for s in scenes if s.character_presence == "featured"]
-        assert featured, "expected at least one featured scene"
-        for scene in featured:
-            assert "gold armour" in scene.visual_prompt
+        """Featured (focus=subject) scenes carry the full character description."""
+        from pipeline.story_generator import _build_visual_prompt_with_framing
+        skill, char = _make_skill(), _make_character()
+        vp = _build_visual_prompt_with_framing(
+            "MEDIUM SHOT", "a warrior strides forward", skill.camera_vocabulary[0],
+            skill.lighting_vocabulary[0], char.description, skill,
+            focus="subject", focus_subject="", character_presence="featured",
+        )
+        assert "gold armour" in vp
 
     def test_fallback_visual_no_character_in_environment_shots(self):
         """Scenes marked 'none' are pure environment/insert shots — the full
@@ -382,13 +385,16 @@ class TestGenerateScenesPromptIntegration:
     def test_fallback_visual_background_uses_distant_clause(self):
         """Background scenes mention only a distant silhouette-level figure,
         never the full close-range description."""
-        scenes = self._run(mock_visual=None, mock_video=None)
-        bg_scenes = [s for s in scenes if s.character_presence == "background"]
-        assert bg_scenes, "expected at least one background scene"
-        for scene in bg_scenes:
-            assert "small distant figure" in scene.visual_prompt
-            # Full description details (facial features) must not appear
-            assert "hawk-like eyes" not in scene.visual_prompt
+        from pipeline.story_generator import _build_visual_prompt_with_framing
+        skill, char = _make_skill(), _make_character()
+        vp = _build_visual_prompt_with_framing(
+            "WIDE SHOT", "a warrior on a distant ridge", skill.camera_vocabulary[0],
+            skill.lighting_vocabulary[0], char.description, skill,
+            focus="secondary", focus_subject="", character_presence="background",
+        )
+        assert "small distant figure" in vp
+        # Full description details (facial features) must not appear
+        assert "hawk-like eyes" not in vp
 
     def test_presence_mix_is_cinematic(self):
         """A scene list must not be 100% featured — that's the bug this guards."""
@@ -399,22 +405,23 @@ class TestGenerateScenesPromptIntegration:
         )
 
     def test_fallback_visual_scene_desc_comes_before_character(self):
-        """In featured scenes the scene description must appear before the
-        character so the text-area shows something unique at the top."""
-        scenes = self._run(mock_visual=None, mock_video=None)
-        char_desc = _make_character().description
-        featured = [s for s in scenes if s.character_presence == "featured"]
-        assert featured, "expected at least one featured scene"
-        for scene in featured:
-            desc_pos = scene.visual_prompt.find(scene.description[:20])
-            char_pos = scene.visual_prompt.find(char_desc[:20])
-            assert desc_pos != -1, "scene description missing from visual_prompt"
-            assert char_pos  != -1, "character description missing from visual_prompt"
-            assert desc_pos < char_pos, (
-                f"Scene desc should come before character in visual_prompt.\n"
-                f"  desc pos={desc_pos}, char pos={char_pos}\n"
-                f"  prompt={scene.visual_prompt[:120]}"
-            )
+        """In featured (focus=subject) scenes the scene description must appear
+        before the character so the text-area shows something unique at the top."""
+        from pipeline.story_generator import _build_visual_prompt_with_framing
+        skill, char = _make_skill(), _make_character()
+        desc = "a warrior strides across the broken bridge"
+        vp = _build_visual_prompt_with_framing(
+            "MEDIUM SHOT", desc, skill.camera_vocabulary[0],
+            skill.lighting_vocabulary[0], char.description, skill,
+            focus="subject", focus_subject="", character_presence="featured",
+        )
+        desc_pos = vp.find(desc[:20])
+        char_pos = vp.find(char.description[:20])
+        assert desc_pos != -1, "scene description missing from visual_prompt"
+        assert char_pos != -1, "character description missing from visual_prompt"
+        assert desc_pos < char_pos, (
+            f"Scene desc should come before character.\n  prompt={vp[:160]}"
+        )
 
     def test_all_scene_visual_prompts_start_differently(self):
         """The first 30 chars of each visual_prompt must differ across scenes."""

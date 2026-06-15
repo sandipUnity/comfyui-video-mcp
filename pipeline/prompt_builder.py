@@ -64,13 +64,35 @@ def _scenes_block(scenes: list, include_presence: bool = False) -> str:
         if include_presence:
             presence = (getattr(s, "character_presence", "") or "featured").upper()
             presence_part = f" | Character: {presence}"
-        lines.append(
+        line = (
             f"\n  Scene {s.scene_number} | Act: {s.act} | Shot: {shot}{presence_part}\n"
             f"  Description: \"{s.description}\"\n"
             f"  Camera:      \"{s.camera}\"\n"
             f"  Lighting:    \"{s.lighting}\""
         )
+        # Append the focus line (additive — never reorders existing tokens)
+        focus = getattr(s, "focus", "") or ""
+        if focus:
+            fs = getattr(s, "focus_subject", "") or ""
+            line += f"\n  Focus:       {focus.upper()} | Subject: \"{fs}\""
+        lines.append(line)
     return "\n".join(lines)
+
+
+# Explains the per-scene FOCUS to the AI — always included so AI backends build
+# each shot around its own subject instead of defaulting to the character.
+_FOCUS_RULES = """\
+PER-SCENE FOCUS — every scene names an AREA OF FOCUS and a concrete SUBJECT.
+Build the shot around that subject, not around the character:
+  SUBJECT      → the protagonist is the subject (apply the character description)
+  ESTABLISHING → the location/world is the subject; no single person dominates
+  SECONDARY    → another figure/crowd is the subject
+  OBJECT       → a specific prop/artifact is the subject, isolated and centered
+  DETAIL       → a macro texture/surface insert is the subject
+  PHENOMENON   → an action/force/atmosphere (fire, water, light, dust) is the subject
+  REACTION     → a close gesture/eyes beat; the moment is the subject
+BEGIN each prompt with the shot size, then immediately NAME AND FRAME the
+assigned Subject. Do NOT default to a centered person unless Focus is SUBJECT."""
 
 
 # Explains the per-scene "Character:" marking to the AI. Only included when the
@@ -305,6 +327,8 @@ PROJECT CONTEXT:
   Motion style: "{style_dna.motion_style if style_dna else ""}"
 
 {_style_block(style_dna)}
+
+{_FOCUS_RULES}
 {presence_block}
 {_scenes_block(scenes, include_presence=has_char)}
 
@@ -358,6 +382,9 @@ def build_single_scene_prompt(
     presence    = (getattr(scene, "character_presence", "") or "featured").upper()
     presence_block = f"\n{_PRESENCE_RULES}\n" if character else ""
     presence_part  = f" | Character: {presence}" if character else ""
+    focus       = (getattr(scene, "focus", "") or "subject").upper()
+    focus_sub   = getattr(scene, "focus_subject", "") or ""
+    focus_part  = f"\n  Focus:       {focus} | Subject: \"{focus_sub}\""
 
     schema = f'''{{"stage": "scene_prompts",
   "result": {{
@@ -378,17 +405,19 @@ PROJECT CONTEXT:
 {char_line}
   Motion style: "{style_dna.motion_style if style_dna else ""}"
 
+{_FOCUS_RULES}
 {presence_block}
 SCENE TO REPROMPT:
-  Scene {scene.scene_number} | Act: {scene.act} | Shot: {getattr(scene, 'shot_size', '') or 'MEDIUM SHOT'}{presence_part}
+  Scene {scene.scene_number} | Act: {scene.act} | Shot: {getattr(scene, 'shot_size', '') or 'MEDIUM SHOT'}{presence_part}{focus_part}
   Description: "{scene.description}"
   Camera:      "{scene.camera}"
   Lighting:    "{scene.lighting}"
 
 VISUAL PROMPT RULES:
 1. BEGIN with the SHOT SIZE exactly as listed above (e.g. "WIDE SHOT.", "CLOSE-UP.")
-2. If the character is in the shot (FEATURED/BACKGROUND), follow with their position in
-   frame; if Character: NONE, open with an environment composition note — no people
+2. NAME AND FRAME the scene's FOCUS subject as the dominant element. Only when Focus is
+   SUBJECT does the protagonist lead; otherwise build the shot around the focus subject
+   and, if Character: NONE, keep people out of frame entirely
 3. Describe the ENVIRONMENT and scene action next
 4. Apply the Character marking: full description AFTER the environment only when FEATURED;
    silhouette-level cues when BACKGROUND; no character at all when NONE

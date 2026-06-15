@@ -116,11 +116,298 @@ _ENV_PLACEMENT_BY_SHOT: dict[str, str] = {
 }
 
 
+# ── Per-scene FOCUS (area of focus) — the fix for character-centric output ─────
+#
+# Each scene gets an explicit FOCUS: what the shot is *about*. Only "subject"
+# foregrounds the protagonist; the rest make the shot about a place, figure,
+# prop, texture or event. character_presence is then a *projection* of focus,
+# so all the existing presence-gated prompt code keeps working unchanged.
+
+# Act → narrative-intent focus (what each story beat is "about")
+_FOCUS_BY_ACT: dict[str, str] = {
+    # establishing / world
+    "HOOK": "establishing", "BEFORE": "establishing", "ORDINARY": "establishing",
+    "ORDINARY1": "establishing", "ORDINARY2": "establishing", "SETUP": "establishing",
+    "DEPARTURE": "establishing", "JOURNEY": "establishing",
+    "RESOLUTION": "establishing", "AFTER": "establishing", "CODA": "establishing",
+    "VICTORY": "establishing", "REBORN": "establishing",
+    "WONDER": "establishing", "FIRST LIGHT": "establishing", "FIRST SIGHT": "establishing",
+    # object beats ("one wrong element enters", "an object falls")
+    "INCITING": "object", "CATALYST": "object", "CHALLENGE": "object",
+    # motion / force / transformation
+    "BUILD": "phenomenon", "BUILD1": "phenomenon", "BUILD2": "phenomenon", "BUILD3": "phenomenon",
+    "MIDPOINT": "phenomenon", "TEST": "phenomenon", "TEST1": "phenomenon", "TEST2": "phenomenon",
+    "CHANGE": "phenomenon", "CHANGE1": "phenomenon", "CHANGE2": "phenomenon", "SETBACK": "phenomenon",
+    # slow reveal of a thing
+    "DISCOVERY": "detail", "REVELATION": "detail", "INSCRIPTION": "detail", "TWIST": "detail",
+    # opposing force / figure
+    "CONFRONTATION": "secondary", "REGROUPING": "secondary",
+    # protagonist's decisive emotional beats — the only character-led acts
+    "DOUBT": "subject", "DECISION": "subject", "CRISIS": "subject", "CLIMAX": "subject",
+    # close reaction beats
+    "SACRIFICE": "reaction", "RECKONING": "reaction",
+}
+
+# Fallback when act is unknown — derive focus from shot size
+_FOCUS_BY_SHOT: dict[str, str] = {
+    "EXTREME WIDE SHOT": "establishing",
+    "WIDE SHOT":         "establishing",
+    "MEDIUM WIDE SHOT":  "secondary",
+    "MEDIUM SHOT":       "subject",
+    "MEDIUM CLOSE-UP":   "reaction",
+    "CLOSE-UP":          "detail",
+}
+
+# Ordered non-character fallback used by the diversity sweep
+_FOCUS_FALLBACK_ORDER = ["establishing", "object", "detail", "phenomenon"]
+
+# Acts whose "subject" focus is narratively essential — never demoted
+_PROTECTED_SUBJECT_ACTS = {"CLIMAX", "DECISION", "CRISIS"}
+
+
+def _assign_focus(act: str, shot_size: str, scene_idx: int, total: int) -> str:
+    """Raw per-scene focus from the act label (or shot size when act unknown)."""
+    act_key = act.upper().strip()
+    if act_key in _FOCUS_BY_ACT:
+        return _FOCUS_BY_ACT[act_key]
+    return _FOCUS_BY_SHOT.get(shot_size, "establishing")
+
+
+# Acts where featuring the protagonist reads naturally — used to pick which
+# scenes to promote to "subject" when a character-led story under-features them.
+_CHARACTER_FRIENDLY_ACTS = (
+    "CLIMAX", "DECISION", "CRISIS", "CONFRONTATION", "DOUBT", "RECKONING",
+    "SACRIFICE", "REVELATION", "DISCOVERY", "VICTORY", "MIDPOINT",
+)
+_CHARACTER_FRIENDLY_SHOTS = ("MEDIUM SHOT", "MEDIUM CLOSE-UP", "CLOSE-UP", "MEDIUM WIDE SHOT")
+
+
+def _enforce_focus_variety(focuses: list[str], shots: list[str], acts: list[str],
+                           has_character: bool = True) -> list[str]:
+    """Balance 'subject' (character) scenes into a healthy minority and ensure
+    focus diversity. Deterministic and index-ordered (no RNG) for reproducibility.
+
+    Guarantees, for a story with a locked character:
+      - subject scenes are a MINORITY:  count <= round(n*0.45)
+      - but never ZERO when it's a character story: count >= max(1, round(n*0.30))
+      - >= 3 distinct focus types when n >= 5
+    With no character, the subject floor is 0 (pure subject-driven coverage).
+    """
+    out = list(focuses)
+    n = len(out)
+    if n == 0:
+        return out
+
+    cap   = max(1, round(n * 0.45))
+    floor = max(1, round(n * 0.30)) if has_character else 0
+
+    # 1. Cap surplus subject scenes (demote latest, unprotected acts first)
+    subject_idxs = [i for i, f in enumerate(out) if f == "subject"]
+    if len(subject_idxs) > cap:
+        demotable = [i for i in subject_idxs
+                     if acts[i].upper().strip() not in _PROTECTED_SUBJECT_ACTS]
+        n_demote = len(subject_idxs) - cap
+        for i in reversed(demotable):
+            if n_demote <= 0:
+                break
+            alt = _FOCUS_BY_SHOT.get(shots[i], "establishing")
+            if alt in ("subject", "reaction"):     # never demote to a character type
+                alt = "establishing"
+            out[i] = alt
+            n_demote -= 1
+
+    # 2. Subject FLOOR — promote the most character-appropriate scenes so a
+    #    character story is never reduced to zero character shots.
+    n_subject = sum(1 for f in out if f == "subject")
+    if n_subject < floor:
+        # rank non-subject scenes by how naturally they feature the protagonist
+        def _promo_rank(i: int) -> tuple:
+            act_ok  = acts[i].upper().strip() in _CHARACTER_FRIENDLY_ACTS
+            shot_ok = shots[i] in _CHARACTER_FRIENDLY_SHOTS
+            return (not act_ok, not shot_ok, i)   # True sorts last → prefer act_ok then shot_ok
+        candidates = sorted((i for i, f in enumerate(out) if f != "subject"), key=_promo_rank)
+        for i in candidates:
+            if n_subject >= floor:
+                break
+            out[i] = "subject"
+            n_subject += 1
+
+    # 3. Diversity floor: >= 3 distinct focus types when total >= 5
+    if n >= 5 and len(set(out)) < 3:
+        needed = [f for f in _FOCUS_FALLBACK_ORDER if f not in set(out)]
+        slots = [i for i in range(n)
+                 if acts[i].upper().strip() not in _PROTECTED_SUBJECT_ACTS
+                 and out[i] != "subject"]
+        if slots and needed:
+            step = max(1, len(slots) // max(len(needed), 1))
+            for k, f in enumerate(needed):
+                out[slots[min(k * step, len(slots) - 1)]] = f
+
+    return out
+
+
+# Idea-string tokens that make focus character-centric or are noise
+_STOPWORDS = frozenset({
+    "a", "an", "the", "of", "in", "on", "with", "and", "to", "that", "who", "as", "at",
+    "by", "for", "from", "into", "lone", "single", "his", "her", "its", "their", "they",
+    "discovers", "finds", "repairs", "walks", "runs", "becomes", "learns", "fights",
+    "builds", "awakens", "explores", "video", "story", "about", "is", "are", "was", "while",
+    "lifting", "doing", "through", "over", "across",
+})
+
+# Words denoting a PERSON — excluded from non-subject focus subjects so an
+# environment/object/detail shot never names "the man" as its subject.
+_PROTAGONIST_WORDS = frozenset({
+    "man", "woman", "men", "women", "person", "people", "boy", "girl", "guy",
+    "hero", "heroine", "ranger", "explorer", "astronaut", "detective", "warrior",
+    "king", "queen", "soldier", "child", "kid", "figure", "protagonist", "rider",
+    "dancer", "player", "worker", "miner", "scientist", "pilot", "knight", "monk",
+})
+
+# Domain keyword → bucket; first match in the idea wins
+_DOMAIN_NOUNS: dict[str, str] = {
+    "robot": "machine", "android": "machine", "machine": "machine", "drone": "machine",
+    "engine": "machine", "mining": "machine", "factory": "machine",
+    "ocean": "water", "sea": "water", "wave": "water", "river": "water",
+    "rain": "water", "waterfall": "water", "storm": "water",
+    "city": "urban", "street": "urban", "neon": "urban", "skyline": "urban",
+    "forest": "nature", "desert": "nature", "mountain": "nature", "field": "nature", "cave": "nature",
+    "gallery": "art", "painting": "art", "art": "art", "sculpture": "art",
+    "temple": "ruins", "ruins": "ruins", "ancient": "ruins", "shiva": "ruins",
+    "dragon": "fantasy", "magic": "fantasy",
+}
+
+# Per-focus noun-phrase banks. "{idea_noun}", "{place}", "{thing}" are filled.
+_SUBJECT_BANKS: dict[str, dict[str, list[str]]] = {
+    "establishing": {
+        "generic":  ["the wide landscape of the {place}",
+                     "the empty space around the {place} before anything moves",
+                     "the {place} at rest, seen in full"],
+        "urban":    ["the rain-slick city street where {idea_noun} unfolds",
+                     "the neon skyline above the {place}"],
+        "nature":   ["the vast {place} stretching to the horizon",
+                     "the wild expanse surrounding {idea_noun}"],
+        "ruins":    ["the silent ancient {place}", "the weathered ruins where {idea_noun} unfolds"],
+        "water":    ["the open {place} meeting the sky", "the churning expanse of {place}"],
+    },
+    "object": {
+        "generic":  ["a single significant object within the {place}",
+                     "a lone artifact resting in the {place}"],
+        "machine":  ["the brushed-steel chassis at the heart of the {place}",
+                     "a single intricate mechanism, isolated in frame"],
+        "art":      ["a lone canvas central to the scene", "a single framed artwork on the wall"],
+        "ruins":    ["a weathered carved relic from the {place}", "an ancient stone artifact half-buried"],
+    },
+    "detail": {
+        "generic":  ["an extreme macro texture from the world of {idea_noun}",
+                     "the worn surface of the {thing}"],
+        "water":    ["droplets beading on a cold surface", "the rippling skin of the {place}"],
+        "machine":  ["oil glinting on machined metal", "the fine grain of brushed steel"],
+        "ruins":    ["chiselled detail in ancient stone", "moss creeping across carved {place}"],
+        "nature":   ["dew on a single leaf", "grains of {place} shifting in the wind"],
+    },
+    "phenomenon": {
+        "generic":  ["light and dust moving through the {place}",
+                     "a surge of motion sweeping across the {place}"],
+        "water":    ["a cresting wave breaking across the frame", "water surging over the {place}"],
+        "machine":  ["sparks and steam venting from the {thing}", "machinery roaring into motion"],
+        "nature":   ["wind tearing across the {place}", "a dust storm rolling over the {place}"],
+        "fantasy":  ["arcs of energy crackling across the frame", "fire sweeping through the {place}"],
+    },
+    "secondary": {
+        "generic":  ["a second figure inside the {place}, face turned away",
+                     "the crowd moving through the {place}"],
+    },
+    "reaction": {
+        "generic":  ["hands acting decisively within the scene",
+                     "eyes catching the change in the {place}"],
+    },
+    "subject": {"generic": [""]},   # subject focus => the character IS the subject
+}
+
+
+def _idea_tokens(idea: str) -> list[str]:
+    import re
+    toks = re.findall(r"[a-z0-9]+", (idea or "").lower())
+    return [t for t in toks if t not in _STOPWORDS and len(t) >= 3]
+
+
+def _domain_key(tokens: list[str]) -> str:
+    for t in tokens:
+        if t in _DOMAIN_NOUNS:
+            return _DOMAIN_NOUNS[t]
+    return "generic"
+
+
+def _derive_focus_subject(focus: str, idea: str, scene_idx: int, seed: int) -> str:
+    """Deterministically pick a concrete frameable subject noun (no LLM).
+
+    Person words are excluded so a non-character shot never names the protagonist
+    as its subject; domain (place/thing) nouns are preferred for readability.
+    """
+    if focus == "subject":
+        return ""
+    import re
+    tokens  = _idea_tokens(idea)
+    # Proper nouns (capitalised in the original idea) are likely names/brands —
+    # avoid using them as a generic place/thing ("the cristiano"). Domain nouns
+    # still win below, so "dragon"/"waterfall" are unaffected.
+    proper  = {w.lower() for w in re.findall(r"\b([A-Z][a-zA-Z]+)", idea or "")}
+    # Common-noun setting tokens: drop people AND proper nouns
+    setting = [t for t in tokens if t not in _PROTAGONIST_WORDS and t not in proper]
+    dkey    = _domain_key(tokens)
+    banks   = _SUBJECT_BANKS.get(focus, _SUBJECT_BANKS["establishing"])
+    bank    = banks.get(dkey) or banks["generic"]
+    # Deterministic selection reusing _scene_seed + a STABLE focus offset.
+    # NOTE: builtin hash() on str is randomized per-process (PYTHONHASHSEED), so
+    # it must NOT be used here — use a hashlib digest so the same project always
+    # regenerates identical subjects across separate runs.
+    import hashlib
+    foff = int(hashlib.sha256(focus.encode()).hexdigest(), 16) & 0xFFFF
+    pick = (_scene_seed(seed, scene_idx + 1) + foff) % len(bank)
+    tmpl = bank[pick]
+
+    domain_tok = next((t for t in tokens if t in _DOMAIN_NOUNS and t not in proper), None)
+    place = domain_tok or (setting[0] if setting else "surrounding environment")
+    thing = domain_tok or (setting[0] if setting else "central object")
+    idea_noun = " ".join(setting[:3]) if setting else "the scene"
+
+    phrase = " ".join(tmpl.format(idea_noun=idea_noun, place=place, thing=thing).split()).strip(" .,")
+    return phrase or "the surrounding environment"
+
+
+def _derive_presence_from_focus(focus: str, shot_size: str) -> str:
+    """Project focus → character_presence so existing gated code keeps working."""
+    if focus == "subject":
+        return "featured"
+    if focus in ("secondary", "reaction"):
+        return "featured" if shot_size in ("MEDIUM SHOT", "MEDIUM CLOSE-UP", "CLOSE-UP") else "background"
+    return "none"   # establishing / object / detail / phenomenon
+
+
+# Focus directives that lead the visual prompt for non-subject shots
+_FOCUS_DIRECTIVE_BY_TYPE: dict[str, str] = {
+    "establishing": "the subject of this shot is {subject}; no people in frame",
+    "object":       "the subject of this shot is {subject}, isolated and emphasised, "
+                    "occupying the compositional center, shallow depth of field, no people in frame",
+    "detail":       "macro insert: the subject of this shot is {subject}, frame-filling "
+                    "surface detail, razor-sharp focus on texture, no people in frame",
+    "phenomenon":   "the subject of this shot is {subject} — motion and energy are the focus, "
+                    "captured mid-movement, no people in frame",
+    "secondary":    "the subject of this shot is {subject}",
+    "reaction":     "the subject of this shot is {subject}; tight framing on the gesture, "
+                    "identity secondary to the moment",
+}
+
+
 # ── Character presence assignment ─────────────────────────────────────────────
 #
 # Cinematic coverage means the protagonist does NOT appear in every shot.
 # Character consistency = the character looks identical *whenever on screen*,
 # not that every frame is a character shot.
+#
+# NOTE: _assign_character_presence is KEPT for backward-compat / external callers
+# but the main path now derives presence from focus via _derive_presence_from_focus.
 
 def _assign_character_presence(act: str, shot_size: str, scene_idx: int, total: int) -> str:
     """Return "featured" | "background" | "none" for this scene.
@@ -186,19 +473,27 @@ def _build_visual_prompt_with_framing(
     lighting: str,
     character_desc: str,
     skill,
+    focus: str = "subject",
+    focus_subject: str = "",
     character_presence: str = "featured",
 ) -> str:
-    """Build a mechanical visual prompt that leads with shot size + placement.
+    """Build a mechanical visual prompt that leads with the scene's FOCUS subject.
 
-    Structure:  [SHOT SIZE]. [Placement note]. [Scene content]. [Camera]. [Lighting].
-                [Character — after environment, only if in shot]. [Quality boosters].
+    Structure: [SHOT SIZE]. [Placement]. [FOCUS DIRECTIVE naming the subject].
+               [Scene content]. [Camera]. [Lighting]. [Character — only if in shot].
+               [Quality boosters].
 
-    character_presence gates how the character appears:
-      "featured"   → full description after the environment
-      "background" → silhouette-level distant clause only
-      "none"       → no character text; environment composition note instead
+    For focus=="subject" the focus directive is empty and the character is the
+    subject, so the prompt is byte-identical to the prior featured/character path.
+    character_presence (a projection of focus, or a manual UI override) gates the
+    character clause.
     """
     char_clean = character_desc.rstrip(", ")
+
+    # Focus directive only for non-subject shots that have a concrete subject
+    directive = ""
+    if focus != "subject" and focus_subject:
+        directive = _FOCUS_DIRECTIVE_BY_TYPE.get(focus, "").format(subject=focus_subject)
 
     if character_presence == "none" or not char_clean:
         placement = _ENV_PLACEMENT_BY_SHOT.get(shot_size, "") if character_presence == "none" \
@@ -212,7 +507,8 @@ def _build_visual_prompt_with_framing(
         core = f"{scene_desc}, {camera}, {lighting}, {char_clean}"
 
     placement_clause = f" {placement}." if placement else ""
-    base = f"{shot_size}.{placement_clause} {core}"
+    directive_clause = f" {directive}." if directive else ""
+    base = f"{shot_size}.{placement_clause}{directive_clause} {core}"
     return build_comfyui_positive(base, skill)
 
 
@@ -517,8 +813,11 @@ def _claude_visual_prompts_batch(
                 _ENV_PLACEMENT_BY_SHOT.get(shot, "") if presence == "NONE"
                 else _PLACEMENT_BY_SHOT.get(shot, "")
             )
+            focus    = s.get("focus", "subject").upper()
+            focus_sub = s.get("focus_subject", "")
             return (
-                f"{i+1}. Act: {s['act']} | Shot: {shot} | Character: {presence}\n"
+                f"{i+1}. Act: {s['act']} | Shot: {shot} | Focus: {focus} | Character: {presence}\n"
+                f"   Focus subject: \"{focus_sub}\"\n"
                 f"   Placement: {placement}\n"
                 f"   Scene: {s['description']}\n"
                 f"   Camera: {s['camera']}\n"
@@ -541,16 +840,27 @@ def _claude_visual_prompts_batch(
             "                          build and clothing colour — NO facial detail\n"
             "  Character: NONE       → pure environment / establishing / insert shot. The protagonist\n"
             "                          must NOT appear and must NOT be mentioned at all\n\n"
+            "SCENE FOCUS — every shot has ONE subject, given as 'Focus' + 'Focus subject':\n"
+            "  SUBJECT      → the protagonist is the subject (apply the full character description)\n"
+            "  ESTABLISHING → the location/world is the subject; no single person dominates\n"
+            "  SECONDARY    → another figure/crowd is the subject\n"
+            "  OBJECT       → a specific prop/artifact is the subject, isolated and centered\n"
+            "  DETAIL       → a macro texture/surface insert is the subject\n"
+            "  PHENOMENON   → an action/force/atmosphere (fire, water, light, dust) is the subject\n"
+            "  REACTION     → a close gesture/eyes beat; the moment is the subject\n"
+            "Only when Focus is SUBJECT may the protagonist be the main subject. For all other\n"
+            "focus types, BUILD THE SHOT AROUND THE FOCUS SUBJECT, not the character.\n\n"
             "CRITICAL RULES — read every line:\n"
             "1. BEGIN each prompt with the SHOT SIZE (e.g. 'EXTREME WIDE SHOT.', 'CLOSE-UP.') — exactly as specified\n"
             "2. IMMEDIATELY follow with the PLACEMENT note for that shot\n"
-            "3. Then describe the ENVIRONMENT and SCENE ACTION\n"
-            "4. Apply the CHARACTER PRESENCE marking for that scene — full description only when FEATURED\n"
+            "3. Then NAME AND FRAME the scene's FOCUS SUBJECT as the dominant element\n"
+            "4. Apply the CHARACTER PRESENCE marking — full description only when FEATURED; the\n"
+            "   protagonist must NOT be the subject unless Focus is SUBJECT\n"
             "5. Include the exact camera move and lighting as specified\n"
             "6. Append quality-boosters and style tags at the very end\n"
             "7. Each prompt: under 150 words, single paragraph, no line breaks\n"
             "8. Every prompt MUST open with a DIFFERENT shot size — variety is mandatory\n"
-            "9. NEVER produce a medium portrait of a centred character — use the placement note\n"
+            "9. Do NOT default to a centred person — only SUBJECT-focus scenes center the protagonist\n"
             "10. Output ONLY a JSON array of strings — no markdown, no labels\n\n"
             f"Scenes:\n{scenes_text}\n\n"
             f"Return a JSON array of exactly {n} strings."
@@ -612,7 +922,9 @@ def _claude_video_prompts_batch(
             f"  • {c}" for c in skill.camera_vocabulary[:4]
         )
         scenes_text = "\n".join(
-            f"{i+1}. Act: {s['act']} | Character: {s.get('character_presence', 'featured').upper()} — {s['description']}\n"
+            f"{i+1}. Act: {s['act']} | Focus: {s.get('focus', 'subject').upper()} | "
+            f"Character: {s.get('character_presence', 'featured').upper()} — {s['description']}\n"
+            f"   Focus subject: \"{s.get('focus_subject', '')}\"\n"
             f"   Assigned camera: {s['camera']}"
             for i, s in enumerate(scenes)
         )
@@ -620,15 +932,16 @@ def _claude_video_prompts_batch(
 
         user_msg = (
             f"Write {n} I2V motion prompts for these scenes.\n\n"
-            f'Subject: "{subject_hint}"\n'
+            f'Protagonist (only relevant on SUBJECT-focus scenes): "{subject_hint}"\n'
             f"Project motion style: {motion_style}\n\n"
             f"Camera vocabulary reference:\n{cam_examples}\n\n"
             f"Scenes:\n{scenes_text}\n\n"
             "Rules: motion only, under 60 words each, precise language.\n"
-            "Character presence per scene:\n"
-            "  FEATURED   → describe the subject's movement plus camera + environment motion\n"
-            "  BACKGROUND → the subject is a distant figure; describe their broad movement only\n"
-            "  NONE       → no person in this shot; describe ONLY camera + environmental motion\n"
+            "The thing that MOVES is the scene's Focus subject:\n"
+            "  SUBJECT                → describe the protagonist's movement + camera + environment motion\n"
+            "  ESTABLISHING/OBJECT/DETAIL/PHENOMENON → no person; describe the focus subject's motion\n"
+            "                           (or the place/object/event) + camera + environmental motion\n"
+            "  SECONDARY/REACTION     → describe that figure's/gesture's movement + camera\n"
             f"Return ONLY a JSON array of {n} strings."
         )
 
@@ -716,7 +1029,15 @@ def generate_scenes_from_story(
 
     character_desc = character.description if character else ""
 
-    # ── Step 1: build per-scene structure + mechanical prompts (always works) ──
+    # ── Pass 1: shot sizes + raw focus, then the sequence-level variety guard ──
+    # The variety guard caps "subject" (character) scenes at ~45% and guarantees
+    # focus diversity, so the output can never be all character-focused.
+    shots   = [_assign_shot_size(act_labels[i], i, n) for i in range(n)]
+    raw_foc = [_assign_focus(act_labels[i], shots[i], i, n) for i in range(n)]
+    focuses = _enforce_focus_variety(raw_foc, shots, act_labels,
+                                     has_character=bool(character_desc))
+
+    # ── Pass 2: build per-scene structure + mechanical prompts (always works) ──
     scene_inputs: list[dict] = []
     scenes: list[SceneState] = []
 
@@ -727,29 +1048,34 @@ def generate_scenes_from_story(
         lite_idx = i % len(skill.lighting_vocabulary)
         cam      = skill.camera_vocabulary[cam_idx]
         lite     = skill.lighting_vocabulary[lite_idx]
+        shot_size = shots[i]
+        focus     = focuses[i]
+        focus_subject = _derive_focus_subject(focus, idea, i, global_seed)
+        # Presence is a projection of focus (UI can override later).
+        presence  = _derive_presence_from_focus(focus, shot_size)
 
-        # Assign narrative-aware shot size (wide/medium/close based on act + position)
-        shot_size = _assign_shot_size(act, i, n)
-
-        # Decide whether the character is in this shot at all — cinematic
-        # coverage mixes establishing/insert shots with character shots.
-        presence = _assign_character_presence(act, shot_size, i, n)
-
-        # Mechanical visual prompt — leads with shot size + placement directive
-        # so the model frames correctly even without Claude.
+        # Mechanical visual prompt — leads with the FOCUS subject so each scene
+        # is about its own area of focus, not always the character.
         visual_prompt   = _build_visual_prompt_with_framing(
             shot_size, desc, cam, lite, character_desc, skill,
-            character_presence=presence,
+            focus=focus, focus_subject=focus_subject, character_presence=presence,
         )
         negative_prompt = build_comfyui_negative(skill)
+        # Video motion leads with the focus subject for non-character shots.
+        if focus == "subject" and character_desc:
+            video_base = f"{desc}, {character_desc}"
+        elif focus_subject:
+            video_base = f"{focus_subject}, {desc}"
+        else:
+            video_base = desc
         video_prompt    = build_comfyui_video_prompt(
-            f"{desc}, {character_desc}" if (character_desc and presence == "featured") else desc,
-            skill, cam, style_dna.motion_style
+            video_base, skill, cam, style_dna.motion_style
         )
 
         scene_inputs.append({
             "act": act, "description": desc, "camera": cam, "lighting": lite,
             "shot_size": shot_size, "character_presence": presence,
+            "focus": focus, "focus_subject": focus_subject,
         })
         scenes.append(SceneState(
             scene_id        = f"scene_{i+1:02d}",
@@ -767,6 +1093,8 @@ def generate_scenes_from_story(
             video_prompt    = video_prompt,
             shot_size       = shot_size,
             character_presence = presence,
+            focus           = focus,
+            focus_subject   = focus_subject,
             seed            = _scene_seed(global_seed, i + 1),
             status          = "pending",
         ))
