@@ -10,6 +10,7 @@ Run:  venv\\Scripts\\streamlit run app.py
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import os
 import random
@@ -38,6 +39,12 @@ from pipeline.story_generator import (
     generate_story_options,
     generate_scenes_from_story,
     generate_character_description,
+)
+from pipeline.ui_tokens import (
+    FOCUS_META, ROLE_META, ACT_COLOR,
+    focus_chip, role_chip, act_pill, hero_badge,
+    focus_label, role_label, focus_color,
+    OFFLINE_BADGE_HTML,
 )
 from skills_engine import SKILLS, build_comfyui_positive, build_comfyui_negative
 from pipeline import (
@@ -145,12 +152,164 @@ def goto(step: int):
     st.rerun()
 
 
+def _scenes_sig(scenes) -> tuple:
+    """Cheap stable signature of a scene list — used as a cache/rebuild key."""
+    return tuple(
+        (s.scene_id, getattr(s, "focus", "subject"),
+         getattr(s, "narrative_role", ""), bool(getattr(s, "hero_moment", False)),
+         s.act, (s.description or "")[:32])
+        for s in scenes
+    )
+
+
+def _story_overview(p) -> None:
+    """At-a-glance story arc panel — colour-coded focus strip, role checklist,
+    hero placement, and rule-based health warnings. Fully offline (no AI)."""
+    if not p.scenes:
+        return
+    n        = len(p.scenes)
+    n_subj   = sum(1 for s in p.scenes if getattr(s, "focus", "subject") == "subject")
+    n_hero   = sum(1 for s in p.scenes if getattr(s, "hero_moment", False))
+    n_role   = sum(1 for s in p.scenes if getattr(s, "narrative_role", ""))
+    pct_subj = round((n_subj / n) * 100) if n else 0
+
+    expanded_default = n <= 8
+    with st.expander(
+        f"🎬 Story overview — {n} scenes · {n_hero} hero · {pct_subj}% character-led",
+        expanded=expanded_default,
+    ):
+        cm, cc, cr = st.columns([1.4, 3, 2])
+
+        # ── Block A: metrics ────────────────────────────────────────────────
+        with cm:
+            st.metric("Total scenes", f"{n}", f"≈ {n * 5}s of video")
+            if n_hero == 0:
+                st.metric("Hero moment", "—", "none set ⚠", delta_color="inverse")
+            elif n_hero == 1:
+                hero_scene = next(s for s in p.scenes if getattr(s, "hero_moment", False))
+                st.metric("Hero moment", f"S{hero_scene.scene_number}", hero_scene.act)
+            else:
+                st.metric("Hero moment", f"{n_hero} scenes", "consider thinning",
+                          delta_color="inverse")
+            balance = ("well balanced" if 25 <= pct_subj <= 60
+                       else ("character-heavy" if pct_subj > 60 else "world-heavy"))
+            st.metric("Character-led", f"{pct_subj}%", balance,
+                      delta_color="off" if 25 <= pct_subj <= 60 else "inverse")
+
+        # ── Block B: coloured focus strip with hero stars ───────────────────
+        with cc:
+            st.markdown("**Focus across the timeline**")
+            try:
+                import altair as alt
+                import pandas as pd
+                df = pd.DataFrame([
+                    {"scene": s.scene_number,
+                     "focus": getattr(s, "focus", "subject"),
+                     "focus_label": focus_label(getattr(s, "focus", "subject")),
+                     "hero": bool(getattr(s, "hero_moment", False))}
+                    for s in p.scenes
+                ])
+                domain = list(FOCUS_META.keys())
+                rng    = [FOCUS_META[k][2] for k in domain]
+                bars = (alt.Chart(df)
+                    .mark_bar(size=30, cornerRadius=4)
+                    .encode(
+                        x=alt.X("scene:O", title=None, axis=alt.Axis(labelAngle=0)),
+                        y=alt.value(50),
+                        color=alt.Color("focus:N",
+                            scale=alt.Scale(domain=domain, range=rng),
+                            legend=alt.Legend(orient="bottom", title="Shot focus",
+                                              labelExpr=("datum.label == 'subject' ? '🧑 Protagonist' :"
+                                                         "datum.label == 'establishing' ? '🌅 Place' :"
+                                                         "datum.label == 'object' ? '📦 Object' :"
+                                                         "datum.label == 'detail' ? '🔍 Detail' :"
+                                                         "datum.label == 'phenomenon' ? '🌪 Action' :"
+                                                         "datum.label == 'secondary' ? '👥 Figure' :"
+                                                         "datum.label == 'reaction' ? '👁 Reaction' : datum.label"))),
+                        tooltip=["scene:O", "focus_label:N"],
+                    ).properties(height=80))
+                hero_df = df[df.hero]
+                if len(hero_df):
+                    bars = bars + alt.Chart(hero_df).mark_text(
+                        text="★", size=22, dy=-30, color="#fbbf24",
+                    ).encode(x="scene:O")
+                st.altair_chart(bars, use_container_width=True)
+            except Exception:
+                # Plain-HTML fallback if altair isn't available for some reason
+                cells = "".join(
+                    f"<div title='S{s.scene_number}: {focus_label(getattr(s, 'focus', 'subject'))}'"
+                    f"style='flex:1;height:32px;border-radius:4px;"
+                    f"background:{focus_color(getattr(s, 'focus', 'subject'))};"
+                    f"margin:0 1px;display:flex;align-items:center;justify-content:center;"
+                    f"color:#000;font-weight:700'>"
+                    f"{'★' if getattr(s, 'hero_moment', False) else ''}</div>"
+                    for s in p.scenes
+                )
+                st.markdown(
+                    f"<div style='display:flex'>{cells}</div>",
+                    unsafe_allow_html=True,
+                )
+
+        # ── Block C: role checklist ─────────────────────────────────────────
+        with cr:
+            st.markdown("**Role coverage**")
+            present = {getattr(s, "narrative_role", "") for s in p.scenes
+                       if getattr(s, "narrative_role", "")}
+            recommended = ["establish_context", "introduce_subject",
+                           "build_tension", "deliver_payload", "resolution"]
+            for r in recommended:
+                emo, lbl, _ = ROLE_META[r]
+                hit = r in present
+                mark = "✅" if hit else "·"
+                color = "#22c55e" if hit else "#6b7280"
+                st.markdown(
+                    f"<span style='color:{color};font-size:.9rem'>{mark} {emo} {lbl}</span>",
+                    unsafe_allow_html=True,
+                )
+
+        # ── Health checks ───────────────────────────────────────────────────
+        warnings: list[str] = []
+        if n_hero == 0:
+            warnings.append(
+                "⚠ **No hero moment marked.** Your final video won't have an extended "
+                "hold beat — pick your visual peak and toggle ★ in the "
+                "**✨ Make it special** tab of any scene."
+            )
+        if n_hero > 4:
+            warnings.append(
+                "⚠ **Many hero scenes** — 1–2 is ideal so the peak reads. "
+                "Untoggle ★ on the less essential ones."
+            )
+        if n_subj == n and n > 1:
+            warnings.append(
+                "⚠ **Every shot is character-led.** Your video may feel claustrophobic. "
+                "Set Focus = 🌅 *About the place* on scene 1, and consider 📦/🔍/🌪 "
+                "for at least one mid-scene."
+            )
+        if n_subj == 0 and p.character:
+            warnings.append(
+                "💡 **Character locked but zero character-led scenes.** "
+                "Set Focus = 🧑 *About the protagonist* on at least one beat "
+                "(usually the payoff)."
+            )
+        if not present:
+            warnings.append(
+                "💡 **No narrative roles assigned.** Pick one per scene under "
+                "**✨ Make it special** to unlock storytelling-grade compose at Step 10."
+            )
+        for w in warnings:
+            st.warning(w)
+        if not warnings:
+            st.success("✅ Solid coverage: hero set, varied focus, story roles in use.")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
 
 with st.sidebar:
     st.title("🎬 AI Video Pipeline")
+    st.markdown(OFFLINE_BADGE_HTML, unsafe_allow_html=True)
     st.divider()
 
     # ── Step progress ─────────────────────────────────────────────────────────
@@ -1586,128 +1745,238 @@ def step_5():
 
     st.divider()
 
-    # ── Per-scene editor ──────────────────────────────────────────────────────
+    # ══ Story Overview ═══════════════════════════════════════════════════════
+    # At-a-glance summary of the whole arc — colour-coded focus strip, role
+    # checklist, health-check warnings. Fully offline (no AI, no API).
+    _story_overview(p)
+
+    # CSS injected once for hero gradient + card spacing
+    st.html("""
+    <style>
+      .scene-row{padding:6px 4px;margin:-6px -4px 4px;border-radius:6px;}
+      .scene-hero{background:linear-gradient(90deg,#fef3c733 0%,transparent 60%);
+                  border-left:4px solid #f59e0b;padding-left:8px;}
+    </style>
+    """)
+
+    # ── Per-scene cards: bordered container + summary + tabs ─────────────────
+    from pipeline.story_generator import _derive_presence_from_focus
+    from pipeline.scene_state import VALID_NARRATIVE_ROLE
+    _focus_opts = list(FOCUS_META.keys())   # ordered: subject first, etc.
+    _role_opts  = [""] + sorted(VALID_NARRATIVE_ROLE)
+    _presence_opts = ["featured", "background", "none"]
+
     for i, scene in enumerate(p.scenes):
-        with st.expander(f"Scene {scene.scene_number}  ·  `{scene.act}`  ·  {scene.description[:60]}",
-                         expanded=(i < 3)):
+        is_hero = bool(getattr(scene, "hero_moment", False))
+        with st.container(border=True):
+            # Subtle gold background strip for hero scenes (paints the row)
+            wrap_class = "scene-row scene-hero" if is_hero else "scene-row"
+            st.html(f"<div class='{wrap_class}'></div>")
 
-            r1c1, r1c2, r1c3 = st.columns([1, 1, 4])
-            new_act = r1c1.text_input("Act label", value=scene.act, key=f"act_{i}")
-            # Move up/down
-            if r1c2.button("↑", key=f"up_{i}", disabled=(i == 0)):
-                p.scenes[i], p.scenes[i-1] = p.scenes[i-1], p.scenes[i]
-                # Re-number
-                for j, s in enumerate(p.scenes):
-                    s.scene_number = j + 1
-                    s.scene_id = f"scene_{j+1:02d}"
-                save()
-                st.rerun()
-            if r1c2.button("↓", key=f"dn_{i}", disabled=(i == len(p.scenes) - 1)):
-                p.scenes[i], p.scenes[i+1] = p.scenes[i+1], p.scenes[i]
-                for j, s in enumerate(p.scenes):
-                    s.scene_number = j + 1
-                    s.scene_id = f"scene_{j+1:02d}"
-                save()
-                st.rerun()
-            new_desc = r1c3.text_input("Description", value=scene.description, key=f"desc_{i}")
+            # ── Summary row (always visible) ────────────────────────────────
+            sc_num, sc_chips, sc_actions = st.columns([0.5, 5.5, 1.5])
+            with sc_num:
+                star = "★" if is_hero else "·"
+                star_color = "#f59e0b" if is_hero else "#9ca3af"
+                act_color = ACT_COLOR.get((scene.act or "").upper().strip(), "#9ca3af")
+                st.markdown(
+                    f"<div style='font-size:1.4rem;font-weight:700;line-height:1.1'>"
+                    f"<span style='color:{star_color}'>{star}</span> "
+                    f"<span style='color:{act_color}'>#{scene.scene_number:02d}</span></div>",
+                    unsafe_allow_html=True,
+                )
+            with sc_chips:
+                st.markdown(
+                    act_pill(scene.act)
+                    + focus_chip(getattr(scene, "focus", "subject"))
+                    + role_chip(getattr(scene, "narrative_role", ""))
+                    + hero_badge(is_hero)
+                    + f"<div style='color:#9ca3af;font-size:.85rem;margin-top:3px'>"
+                      f"{html.escape((scene.description or '')[:120])}</div>",
+                    unsafe_allow_html=True,
+                )
+            with sc_actions:
+                ca, cb = st.columns(2)
+                if ca.button("↑", key=f"up_{i}", disabled=(i == 0), help="Move up"):
+                    p.scenes[i], p.scenes[i-1] = p.scenes[i-1], p.scenes[i]
+                    for j, s in enumerate(p.scenes):
+                        s.scene_number = j + 1
+                        s.scene_id = f"scene_{j+1:02d}"
+                    save(); st.rerun()
+                if cb.button("↓", key=f"dn_{i}", disabled=(i == len(p.scenes) - 1),
+                             help="Move down"):
+                    p.scenes[i], p.scenes[i+1] = p.scenes[i+1], p.scenes[i]
+                    for j, s in enumerate(p.scenes):
+                        s.scene_number = j + 1
+                        s.scene_id = f"scene_{j+1:02d}"
+                    save(); st.rerun()
 
-            r2c1, r2c2 = st.columns(2)
-            cam_cur = min(scene.camera_index, len(cam_opts) - 1)
-            lit_cur = min(scene.lighting_index, len(lit_opts) - 1)
-            chosen_cam = r2c1.selectbox("Camera", cam_opts, index=cam_cur, key=f"cam_{i}")
-            chosen_lit = r2c2.selectbox("Lighting", lit_opts, index=lit_cur, key=f"lit_{i}")
-
-            # ── Focus row — what the shot is ABOUT (fixes character-centric output) ──
-            r3c1, r3c2, r3c3 = st.columns([1.4, 2.6, 1])
-            _focus_opts = ["subject", "establishing", "secondary", "object", "detail",
-                           "phenomenon", "reaction"]
-            _foc_cur = getattr(scene, "focus", "subject")
-            chosen_focus = r3c1.selectbox(
-                "Focus", _focus_opts,
-                index=_focus_opts.index(_foc_cur) if _foc_cur in _focus_opts else 0,
-                key=f"focus_{i}",
-                help=(
-                    "What this shot is ABOUT. 'subject' = the protagonist is the focus; "
-                    "the others make the shot about a place / figure / prop / texture / "
-                    "event so the video isn't character-centric. Focus drives 'Character "
-                    "in shot' below."
-                ),
-            )
-            new_focsub = r3c2.text_input(
-                "Focus subject (what fills the frame)",
-                value=getattr(scene, "focus_subject", ""), key=f"focsub_{i}",
-                help="The concrete thing the shot frames, e.g. 'a cracked brass valve', "
-                     "'wind tearing across the dunes'. Used for non-'subject' focus.",
-            )
-            # Focus drives the default presence; the box below is a manual override.
-            from pipeline.story_generator import _derive_presence_from_focus
-            _focus_default_pres = _derive_presence_from_focus(chosen_focus, scene.shot_size)
-            _presence_opts = ["featured", "background", "none"]
-            _pres_cur = getattr(scene, "character_presence", _focus_default_pres)
-            chosen_pres = r3c3.selectbox(
-                "Character in shot", _presence_opts,
-                index=_presence_opts.index(_pres_cur) if _pres_cur in _presence_opts else 0,
-                key=f"pres_{i}",
-                help=(
-                    "Override how the protagonist appears. Normally derived from Focus "
-                    "(subject→featured, environment/object/detail→none). "
-                    "After changing Focus/this, use the AI re-prompt below — or, in the "
-                    "fully-offline mechanical mode, click 'Rebuild from structure'."
-                ),
+            # ── Internal tabs ───────────────────────────────────────────────
+            tab_story, tab_shot, tab_special, tab_prompt = st.tabs(
+                ["📖 Story", "🎥 Shot", "✨ Make it special", "✍️ Prompt"]
             )
 
-            # ── Storytelling row (pattern borrowed from OpenMontage scene_plan) ──
-            from pipeline.scene_state import VALID_NARRATIVE_ROLE
-            _role_opts = [""] + sorted(VALID_NARRATIVE_ROLE)
-            _role_cur  = getattr(scene, "narrative_role", "") or ""
-            r4c1, r4c2, r4c3 = st.columns([1.4, 4, 1])
-            chosen_role = r4c1.selectbox(
-                "Narrative role", _role_opts,
-                index=_role_opts.index(_role_cur) if _role_cur in _role_opts else 0,
-                key=f"nrole_{i}",
-                help="What JOB this scene does in the arc — drives compositing weight (hero "
-                     "moments hold longer, transitions favour cuts on payload beats).",
-            )
-            new_intent = r4c2.text_input(
-                "Shot intent (WHY this shot exists)",
-                value=getattr(scene, "shot_intent", "") or "",
-                key=f"intent_{i}",
-                placeholder="e.g. 'Isolate the cracked valve so it reads as significant'",
-            )
-            chosen_hero = r4c3.checkbox(
-                "★ Hero",
-                value=bool(getattr(scene, "hero_moment", False)),
-                key=f"hero_{i}",
-                help="Visual peak — gets extra hold time in the montage and extra craft "
-                     "attention from the AI prompts.",
-            )
-            scene.narrative_role = chosen_role
-            scene.shot_intent    = new_intent
-            scene.hero_moment    = chosen_hero
+            # Tab 1: Story (act + description + intent) ─────────────────────
+            with tab_story:
+                ts_c1, ts_c2 = st.columns([1, 3])
+                new_act = ts_c1.text_input(
+                    "Act label", value=scene.act, key=f"act_{i}",
+                    help="Story beat tag — HOOK, BUILD, CLIMAX, etc.",
+                )
+                new_desc = ts_c2.text_input(
+                    "Scene description (what we see)",
+                    value=scene.description, key=f"desc_{i}",
+                )
+                new_intent = st.text_input(
+                    "Why this shot exists (optional)",
+                    value=getattr(scene, "shot_intent", "") or "",
+                    key=f"intent_{i}",
+                    placeholder="e.g. 'Isolate the cracked valve so it reads as significant'",
+                    help="Free-text guidance the AI uses (and your future self reads).",
+                )
 
-            new_prompt = st.text_area("Image prompt (visual_prompt)", value=scene.visual_prompt,
-                                      height=80, key=f"vp_{i}")
+            # Tab 2: Shot (focus + camera + lighting + presence-override) ────
+            with tab_shot:
+                st.markdown("**What is this shot ABOUT?**")
+                _foc_cur = getattr(scene, "focus", "subject")
+                chosen_focus = st.radio(
+                    "Focus", _focus_opts,
+                    index=_focus_opts.index(_foc_cur) if _foc_cur in _focus_opts else 0,
+                    format_func=focus_label,
+                    horizontal=True,
+                    key=f"focus_{i}",
+                    label_visibility="collapsed",
+                )
+                _, _, _, focus_help = FOCUS_META[chosen_focus]
+                st.caption(f"💡 {focus_help}")
 
-            # Apply edits on any change
+                if chosen_focus != "subject":
+                    new_focsub = st.text_input(
+                        "What fills the frame?",
+                        value=getattr(scene, "focus_subject", "") or "",
+                        key=f"focsub_{i}",
+                        placeholder="a cracked brass valve · wind across the dunes · "
+                                    "the cathedral spire at dusk",
+                    )
+                else:
+                    new_focsub = ""  # subject focus uses the character description directly
+
+                st.divider()
+                col_cam, col_lit = st.columns(2)
+                cam_cur = min(scene.camera_index, len(cam_opts) - 1)
+                lit_cur = min(scene.lighting_index, len(lit_opts) - 1)
+                chosen_cam = col_cam.selectbox(
+                    "Camera move", cam_opts, index=cam_cur, key=f"cam_{i}",
+                )
+                chosen_lit = col_lit.selectbox(
+                    "Lighting", lit_opts, index=lit_cur, key=f"lit_{i}",
+                )
+
+                _focus_default_pres = _derive_presence_from_focus(chosen_focus, scene.shot_size)
+                cur_pres = getattr(scene, "character_presence", _focus_default_pres)
+                advanced_default = cur_pres != _focus_default_pres
+                if st.toggle("Override character-in-shot", value=advanced_default,
+                             key=f"pres_adv_{i}",
+                             help="By default, derived from Focus "
+                                  f"(here: **{_focus_default_pres}**). "
+                                  "Toggle to manually pick."):
+                    idx = _presence_opts.index(cur_pres) if cur_pres in _presence_opts \
+                          else _presence_opts.index(_focus_default_pres)
+                    chosen_pres = st.radio(
+                        "Character in shot", _presence_opts,
+                        index=idx, horizontal=True, key=f"pres_{i}",
+                    )
+                else:
+                    chosen_pres = _focus_default_pres
+
+            # Tab 3: Make it special (hero + narrative role) ────────────────
+            with tab_special:
+                chosen_hero = st.toggle(
+                    "★ Mark as the hero moment of this video",
+                    value=is_hero, key=f"hero_{i}",
+                    help="The visual peak. Gets extra hold time in the storytelling "
+                         "montage and extra craft attention in AI prompts. "
+                         "1–2 per project is ideal.",
+                )
+                st.caption("✨ Hero scenes hold +0.6s longer · transitions cut "
+                           "around them · music ducks on the way in.")
+
+                st.divider()
+                cur_role = getattr(scene, "narrative_role", "") or ""
+                chosen_role = st.selectbox(
+                    "Role in the story",
+                    _role_opts,
+                    index=_role_opts.index(cur_role) if cur_role in _role_opts else 0,
+                    format_func=lambda r: role_label(r) if r else "— none (auto from act) —",
+                    key=f"nrole_{i}",
+                    help="What JOB this scene does in the arc. Drives how the "
+                         "storytelling montage cuts and holds.",
+                )
+
+            # Tab 4: Prompt (image prompt + offline rebuild + AI re-prompt) ──
+            with tab_prompt:
+                rebuild_clicked = st.button(
+                    "🔧 Rebuild prompts offline — no AI, no API",
+                    key=f"rebuild_{i}", type="primary", use_container_width=True,
+                    help="Rewrite image & motion prompts from your focus / camera / "
+                         "lighting using the built-in engine. Pure local — no Claude, "
+                         "no key required.",
+                )
+                st.caption("🔒 Works offline · deterministic · same inputs → same prompt")
+
+                new_prompt = st.text_area(
+                    "Image prompt (visual_prompt)",
+                    value=scene.visual_prompt, height=80, key=f"vp_{i}",
+                )
+
+                if mode == "copy_paste":
+                    with st.expander(f"✂️ Re-prompt with AI (copy-paste)",
+                                     expanded=False):
+                        single_prompt = build_single_scene_prompt(
+                            p.idea, scene, p.character, p.style_dna
+                        )
+                        st.code(single_prompt, language=None)
+                        raw_single = st.text_area(
+                            "Paste AI response", height=120,
+                            key=f"cp_scene_paste_{i}",
+                            placeholder='{"stage": "scene_prompts", "result": {…}}',
+                        )
+                        if st.button("✅ Apply to this scene", key=f"cp_scene_apply_{i}",
+                                     type="primary", use_container_width=True):
+                            raw_val = st.session_state.get(f"cp_scene_paste_{i}", "").strip()
+                            if not raw_val:
+                                st.error("Nothing pasted.")
+                            else:
+                                result = parse_scene_prompts_response(raw_val)
+                                if result and result["visual_prompts"]:
+                                    scene.visual_prompt = result["visual_prompts"][0]
+                                    scene.video_prompt  = result["video_prompts"][0]
+                                    save(); st.success("✅ Scene prompts updated!")
+                                    st.rerun()
+                                else:
+                                    st.error(parse_error_message(raw_val, "scenes"))
+
+            # ── Write-back (runs every rerun) ───────────────────────────────
             cam_idx = int(chosen_cam.split("  ")[0])
             lit_idx = int(chosen_lit.split("  ")[0])
-            scene.act            = new_act
-            scene.description    = new_desc
-            scene.camera_index   = cam_idx
-            scene.lighting_index = lit_idx
-            scene.camera         = skill.camera_vocabulary[cam_idx]
-            scene.lighting       = skill.lighting_vocabulary[lit_idx]
-            scene.focus          = chosen_focus
-            scene.focus_subject  = new_focsub.strip()
-            # Manual presence override wins only when it differs from the focus default
+            scene.act              = new_act
+            scene.description      = new_desc
+            scene.camera_index     = cam_idx
+            scene.lighting_index   = lit_idx
+            scene.camera           = skill.camera_vocabulary[cam_idx]
+            scene.lighting         = skill.lighting_vocabulary[lit_idx]
+            scene.focus            = chosen_focus
+            scene.focus_subject    = (new_focsub or "").strip()
             scene.character_presence = chosen_pres
-            scene.visual_prompt  = new_prompt
+            scene.visual_prompt    = new_prompt
+            scene.narrative_role   = chosen_role
+            scene.shot_intent      = new_intent
+            scene.hero_moment      = chosen_hero
+            if not scene.video_prompt or scene.video_prompt == scene.description:
+                scene.video_prompt = new_desc   # keep in sync until step 6
 
-            # Fully-offline rebuild: regenerate this scene's prompts from structure
-            # (focus + presence) with NO AI/API — the local-only path.
-            if st.button("🔧 Rebuild prompt from structure (offline)", key=f"rebuild_{i}",
-                         help="Regenerate the image & motion prompts from the current "
-                              "focus/camera/lighting using the built-in engine — no AI, no API."):
+            # Rebuild click runs AFTER write-back so it uses the latest field values
+            if rebuild_clicked:
                 from pipeline.story_generator import (
                     _build_visual_prompt_with_framing, build_comfyui_video_prompt,
                     build_comfyui_negative,
@@ -1729,41 +1998,7 @@ def step_5():
                 scene.video_prompt = build_comfyui_video_prompt(
                     vbase, skill, scene.camera, p.style_dna.motion_style,
                 )
-                save()
-                st.rerun()
-            if not scene.video_prompt or scene.video_prompt == scene.description:
-                scene.video_prompt = new_desc  # keep in sync until step 6
-
-            # ── Per-scene copy-paste re-prompt ────────────────────────────────
-            if mode == "copy_paste":
-                with st.expander(f"✂️ Re-prompt scene {scene.scene_number} with AI",
-                                 expanded=False):
-                    single_prompt = build_single_scene_prompt(
-                        p.idea, scene, p.character, p.style_dna
-                    )
-                    st.code(single_prompt, language=None)
-
-                    raw_single = st.text_area(
-                        "Paste AI response",
-                        height=120,
-                        key=f"cp_scene_paste_{i}",
-                        placeholder='{"stage": "scene_prompts", "result": {…}}',
-                    )
-                    if st.button("✅ Apply to this scene", key=f"cp_scene_apply_{i}",
-                                 type="primary", use_container_width=True):
-                        raw_val = st.session_state.get(f"cp_scene_paste_{i}", "").strip()
-                        if not raw_val:
-                            st.error("Nothing pasted.")
-                        else:
-                            result = parse_scene_prompts_response(raw_val)
-                            if result and result["visual_prompts"]:
-                                scene.visual_prompt = result["visual_prompts"][0]
-                                scene.video_prompt  = result["video_prompts"][0]
-                                save()
-                                st.success("✅ Scene prompts updated!")
-                                st.rerun()
-                            else:
-                                st.error(parse_error_message(raw_val, "scenes"))
+                save(); st.rerun()
 
     save()
 
@@ -1896,10 +2131,22 @@ def step_6():
                 if scene.storyboard_images:
                     img_path = scene.storyboard_images[0]
                     if Path(img_path).exists():
-                        st.image(img_path, caption=f"S{scene.scene_number} {scene.act}",
-                                 use_container_width=True)
+                        st.image(img_path, use_container_width=True)
+                        st.markdown(
+                            f"<div style='margin-top:-8px;line-height:1.6'>"
+                            f"<b>S{scene.scene_number}</b> "
+                            + act_pill(scene.act)
+                            + focus_chip(getattr(scene, "focus", "subject"))
+                            + hero_badge(getattr(scene, "hero_moment", False))
+                            + "</div>",
+                            unsafe_allow_html=True,
+                        )
                 else:
-                    st.markdown(f"*S{scene.scene_number} — pending*")
+                    st.markdown(
+                        f"*S{scene.scene_number} {focus_label(getattr(scene, 'focus', 'subject'))}"
+                        + (" ★" if getattr(scene, "hero_moment", False) else "")
+                        + " — pending*"
+                    )
 
     st.divider()
     col_back, col_next = st.columns([1, 4])
@@ -2017,8 +2264,16 @@ def step_7():
         border_style = "border: 2px solid #28a745;" if is_approved else ""
 
         with st.container(border=True):
-            st.subheader(
-                f"{'✅ ' if is_approved else ''}Scene {scene.scene_number}  ·  `{scene.act}`"
+            st.markdown(
+                f"### {'✅ ' if is_approved else ''}Scene {scene.scene_number} "
+                + hero_badge(getattr(scene, "hero_moment", False)),
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                act_pill(scene.act)
+                + focus_chip(getattr(scene, "focus", "subject"))
+                + role_chip(getattr(scene, "narrative_role", "")),
+                unsafe_allow_html=True,
             )
             st.caption(scene.description)
 
@@ -2130,7 +2385,13 @@ def step_8():
             with col_img:
                 if scene.approved_image_path and Path(scene.approved_image_path).exists():
                     st.image(scene.approved_image_path, use_container_width=True)
-                st.caption(f"S{scene.scene_number} · `{scene.act}`")
+                st.markdown(
+                    f"<b>S{scene.scene_number}</b> "
+                    + act_pill(scene.act)
+                    + focus_chip(getattr(scene, "focus", "subject"))
+                    + hero_badge(getattr(scene, "hero_moment", False)),
+                    unsafe_allow_html=True,
+                )
 
             with col_prompt:
                 st.write(f"**{scene.description}**")
@@ -2201,10 +2462,13 @@ def step_9():
                 st.image(scene.approved_image_path, use_container_width=True)
             else:
                 st.markdown("*no image*")
-            st.caption(
-                f"**S{scene.scene_number}** `{scene.act}`\n\n"
-                f"{scene.description[:40]}…" if len(scene.description) > 40
-                else f"**S{scene.scene_number}** `{scene.act}`\n\n{scene.description}"
+            short = (scene.description[:40] + "…") if len(scene.description) > 40 \
+                    else scene.description
+            star = " ★" if getattr(scene, "hero_moment", False) else ""
+            st.markdown(
+                f"**S{scene.scene_number}{star}** {focus_label(getattr(scene, 'focus', 'subject'))}"
+                f"  ·  `{scene.act}`<br><span style='color:#9ca3af'>{html.escape(short)}</span>",
+                unsafe_allow_html=True,
             )
 
     # ── Video prompts summary ─────────────────────────────────────────────────
@@ -2427,9 +2691,14 @@ def step_11():
     st.subheader("Job queue")
 
     for scene in p.scenes:
-        col_num, col_act, col_status, col_job = st.columns([1, 2, 2, 4])
-        col_num.write(f"**S{scene.scene_number}**")
-        col_act.write(f"`{scene.act}`")
+        col_num, col_meta, col_status, col_job = st.columns([1, 3, 2, 3])
+        star = " ★" if getattr(scene, "hero_moment", False) else ""
+        col_num.markdown(f"**S{scene.scene_number}**{star}")
+        col_meta.markdown(
+            act_pill(scene.act)
+            + focus_chip(getattr(scene, "focus", "subject")),
+            unsafe_allow_html=True,
+        )
         if scene.video_job_id:
             col_status.success("queued")
             col_job.code(scene.video_job_id, language=None)
@@ -2531,9 +2800,14 @@ def step_12():
         live_status = statuses.get(scene.scene_id, scene.status)
         icon_label  = STATUS_ICONS.get(live_status, f"⚪ {live_status}")
 
-        col_num, col_act, col_status, col_job, col_actions = st.columns([1, 2, 2, 3, 2])
-        col_num.write(f"**S{scene.scene_number}**")
-        col_act.write(f"`{scene.act}`")
+        col_num, col_meta, col_status, col_job, col_actions = st.columns([1, 3, 2, 2, 2])
+        star = " ★" if getattr(scene, "hero_moment", False) else ""
+        col_num.markdown(f"**S{scene.scene_number}**{star}")
+        col_meta.markdown(
+            act_pill(scene.act)
+            + focus_chip(getattr(scene, "focus", "subject")),
+            unsafe_allow_html=True,
+        )
         col_status.write(icon_label)
         col_job.code(scene.video_job_id[:12] + "…" if scene.video_job_id else "—",
                      language=None)
@@ -2647,10 +2921,16 @@ def step_13():
             for col, scene in zip(cols, row):
                 with col:
                     st.video(scene.video_local_path)
-                    st.caption(
-                        f"**S{scene.scene_number}** `{scene.act}`  \n"
-                        f"{scene.description[:60]}"
-                        + ("…" if len(scene.description) > 60 else "")
+                    short = (scene.description[:60] + "…") if len(scene.description) > 60 \
+                            else scene.description
+                    st.markdown(
+                        f"<b>S{scene.scene_number}</b> "
+                        + act_pill(scene.act)
+                        + focus_chip(getattr(scene, "focus", "subject"))
+                        + hero_badge(getattr(scene, "hero_moment", False))
+                        + f"<div style='color:#9ca3af;font-size:.85rem'>"
+                          f"{html.escape(short)}</div>",
+                        unsafe_allow_html=True,
                     )
     else:
         st.info("No clips downloaded yet. Return to Monitor to download completed videos.")
@@ -2668,66 +2948,237 @@ def step_13():
             "- Download [ffmpeg](https://ffmpeg.org/download.html) and add to PATH"
         )
     else:
-        st.caption(f"Backend: **{backend}**")
+        from pipeline.montage import (
+            build_edit_decisions, compile_from_edit_decisions, _has_ffmpeg,
+        )
 
-        col_opts1, col_opts2, col_opts3 = st.columns(3)
-        with col_opts1:
-            transition = st.selectbox(
-                "Transition",
-                options=["dissolve", "fade", "cut"],
-                index=0,
-                help="dissolve = crossfade · fade = fade through black · cut = hard cut",
-            )
-        with col_opts2:
-            t_dur = st.slider(
-                "Transition duration (s)", 0.0, 2.0, value=0.5, step=0.1,
-                disabled=(transition == "cut"),
-            )
-        with col_opts3:
-            out_fps = st.number_input("Output FPS", value=p.fps, step=1, min_value=8)
+        st.caption(f"Backend: **{backend}**  ·  🔒 Runs 100% locally — no API, no upload.")
 
-        music_path = None
-        music_vol  = 0.3
-        with st.expander("🎵 Background music (optional)"):
-            uploaded = st.file_uploader(
-                "Upload audio file (MP3 / WAV / OGG)",
-                type=["mp3", "wav", "ogg", "m4a"],
-            )
-            if uploaded:
-                music_dir = Path(p.output_dir) / "music"
-                music_dir.mkdir(parents=True, exist_ok=True)
-                music_path = music_dir / uploaded.name
-                music_path.write_bytes(uploaded.read())
-                music_vol = st.slider("Music volume", 0.0, 1.0, value=0.3, step=0.05)
-                st.success(f"Audio loaded: {uploaded.name}")
+        has_ffmpeg = _has_ffmpeg()
+        story_default = any(getattr(s, "hero_moment", False)
+                            or getattr(s, "narrative_role", "") for s in p.scenes)
+        mode_choice = st.radio(
+            "Compose mode",
+            options=["story", "simple"] if (story_default and has_ffmpeg) else ["simple", "story"],
+            format_func=lambda m: {
+                "simple": "🎞 Simple — uniform transitions for every cut",
+                "story":  "🎬 Storytelling compose — hero holds, cuts on payoffs · 🔒 fully offline",
+            }[m],
+            horizontal=False,
+            key="step13_compose_mode",
+        )
+        if mode_choice == "story" and not has_ffmpeg:
+            st.warning("⚠ Storytelling compose needs **ffmpeg** on PATH. "
+                       "Install from https://ffmpeg.org/ — falling back to Simple below.")
+            mode_choice = "simple"
 
         montage_output = Path(p.output_dir) / "montage" / f"{p.project_name}_final.mp4"
 
-        if st.button("🎬 Compile montage", type="primary",
-                     use_container_width=True, disabled=len(ready_scenes) < 2):
-            video_paths = [Path(s.video_local_path) for s in ready_scenes]
-            with st.spinner(
-                f"Compiling {len(video_paths)} clips with {transition} transitions…  "
-                "(this may take a minute)"
-            ):
-                try:
-                    result = compile_montage(
-                        video_paths=video_paths,
-                        output_path=montage_output,
-                        transition=transition,
-                        transition_duration=t_dur,
-                        music_path=music_path,
-                        music_volume=music_vol,
-                        fps=int(out_fps),
-                    )
-                    st.session_state.montage_path = str(result)
-                    save()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Montage compilation failed: {e}")
+        if mode_choice == "simple":
+            # ── Simple montage (existing, untouched feature) ────────────────
+            col_opts1, col_opts2, col_opts3 = st.columns(3)
+            with col_opts1:
+                transition = st.selectbox(
+                    "Transition", ["dissolve", "fade", "cut"], index=0,
+                    help="dissolve = crossfade · fade = fade through black · cut = hard cut",
+                )
+            with col_opts2:
+                t_dur = st.slider("Transition duration (s)", 0.0, 2.0, 0.5, 0.1,
+                                  disabled=(transition == "cut"))
+            with col_opts3:
+                out_fps = st.number_input("Output FPS", value=p.fps, step=1, min_value=8)
 
-        if len(ready_scenes) < 2:
-            st.caption("⚠ Need at least 2 clips to compile a montage.")
+            music_path = None
+            music_vol  = 0.3
+            with st.expander("🎵 Background music (optional)"):
+                uploaded = st.file_uploader(
+                    "Upload audio file (MP3 / WAV / OGG)",
+                    type=["mp3", "wav", "ogg", "m4a"],
+                )
+                if uploaded:
+                    music_dir = Path(p.output_dir) / "music"
+                    music_dir.mkdir(parents=True, exist_ok=True)
+                    music_path = music_dir / uploaded.name
+                    music_path.write_bytes(uploaded.read())
+                    music_vol = st.slider("Music volume", 0.0, 1.0, value=0.3, step=0.05)
+                    st.success(f"Audio loaded: {uploaded.name}")
+
+            if st.button("🎬 Compile simple montage", type="primary",
+                         use_container_width=True, disabled=len(ready_scenes) < 2):
+                video_paths = [Path(s.video_local_path) for s in ready_scenes]
+                with st.spinner(
+                    f"Compiling {len(video_paths)} clips with {transition} transitions…"
+                ):
+                    try:
+                        result = compile_montage(
+                            video_paths=video_paths, output_path=montage_output,
+                            transition=transition, transition_duration=t_dur,
+                            music_path=music_path, music_volume=music_vol,
+                            fps=int(out_fps),
+                        )
+                        st.session_state.montage_path = str(result); save(); st.rerun()
+                    except Exception as e:
+                        st.error(f"Montage compilation failed: {e}")
+            if len(ready_scenes) < 2:
+                st.caption("⚠ Need at least 2 clips to compile a montage.")
+
+        else:  # mode_choice == "story"
+            st.info(
+                "🛠 **Local engine** — reads each scene's **hero ★** flag and "
+                "**narrative role** (Step 4) and plans the edit deterministically. "
+                "Hero scenes hold longer · transitions cut around your reveal beats · "
+                "music ducks on character moments."
+            )
+
+            # Knobs
+            col_a, col_b, col_c, col_d = st.columns(4)
+            with col_a:
+                base_trans = st.selectbox("Base transition",
+                                          ["dissolve", "fade", "cut"], index=0,
+                                          key="story_base_trans")
+            with col_b:
+                hero_hold_extra = st.slider(
+                    "Hero hold (extra s)", 0.0, 2.0, 0.6, 0.1,
+                    key="story_hero_hold",
+                    help="Extra seconds the hero scene's last frame holds.",
+                )
+            with col_c:
+                trans_dur = st.slider("Transition duration (s)", 0.0, 2.0, 0.5, 0.1,
+                                      key="story_trans_dur")
+            with col_d:
+                out_fps = st.number_input("Output FPS", value=p.fps, step=1,
+                                          min_value=8, key="story_fps")
+
+            # Music
+            music_path = None
+            with st.expander("🎵 Background music (optional)"):
+                uploaded = st.file_uploader(
+                    "Upload audio file", type=["mp3", "wav", "ogg", "m4a"],
+                    key="story_music_uploader",
+                )
+                if uploaded:
+                    music_dir = Path(p.output_dir) / "music"
+                    music_dir.mkdir(parents=True, exist_ok=True)
+                    music_path = music_dir / uploaded.name
+                    music_path.write_bytes(uploaded.read())
+                    st.success(f"Audio loaded: {uploaded.name}")
+                    st.caption("💡 Music ducks on character-led scenes when every "
+                               "transition is a cut. Pick 'cut' as base transition for "
+                               "the full ducking effect.")
+
+            # Build plan from the latest scene + UI choices
+            plan = build_edit_decisions(
+                p.scenes,
+                base_transition=base_trans,
+                hero_hold_extra=float(hero_hold_extra),
+                transition_duration=float(trans_dur),
+                music_path=str(music_path) if music_path else None,
+            )
+
+            # Editable plan preview
+            st.markdown("**Edit decisions plan**")
+            st.caption(
+                "💡 Computed from your hero / role / focus tags — no AI. "
+                "Override any row before compiling; edits flow into the final cut."
+            )
+            try:
+                import pandas as pd
+                plan_rows = [
+                    {
+                        "Scene":         f"S{s.scene_number}",
+                        "★":             "★" if getattr(s, "hero_moment", False) else "",
+                        "Focus":         focus_label(getattr(s, "focus", "subject")),
+                        "Role":          role_label(getattr(s, "narrative_role", ""))
+                                         if getattr(s, "narrative_role", "") else "—",
+                        "Transition in": d["transition_in"],
+                        "Hold +sec":     float(d["extra_hold_seconds"]),
+                        "Duck music":    bool(d["duck_music"]),
+                    }
+                    for s, d in zip(p.scenes, plan["scenes"])
+                ]
+                editor_key = (
+                    f"story_plan_editor_{len(p.scenes)}_{base_trans}_"
+                    f"{hero_hold_extra}_{trans_dur}"
+                )
+                edited = st.data_editor(
+                    pd.DataFrame(plan_rows),
+                    hide_index=True, use_container_width=True, num_rows="fixed",
+                    column_config={
+                        "Scene":         st.column_config.TextColumn(disabled=True, width="small"),
+                        "★":             st.column_config.TextColumn(disabled=True, width="small"),
+                        "Focus":         st.column_config.TextColumn(disabled=True),
+                        "Role":          st.column_config.TextColumn(disabled=True),
+                        "Transition in": st.column_config.SelectboxColumn(
+                            options=["cut", "dissolve", "fade"]),
+                        "Hold +sec":     st.column_config.NumberColumn(
+                            min_value=0.0, max_value=3.0, step=0.1),
+                        "Duck music":    st.column_config.CheckboxColumn(),
+                    },
+                    key=editor_key,
+                )
+            except Exception as e:
+                st.warning(f"Couldn't render plan table: {e}")
+                edited = None
+
+            with st.expander("🔎 Show raw edit-decisions JSON"):
+                st.json(plan)
+
+            compile_disabled = len(ready_scenes) < 2
+            if st.button("🎬 Compose storytelling montage", type="primary",
+                         use_container_width=True, disabled=compile_disabled):
+                # Apply user edits back into the plan
+                if edited is not None:
+                    sid_to_dec = {s.scene_id: d for s, d in zip(p.scenes, plan["scenes"])}
+                    for row in edited.to_dict(orient="records"):
+                        try:
+                            num = int(row["Scene"][1:])
+                        except ValueError:
+                            continue
+                        target = next(
+                            (s for s in p.scenes if s.scene_number == num), None
+                        )
+                        if target is None:
+                            continue
+                        d = sid_to_dec[target.scene_id]
+                        d["transition_in"]      = row["Transition in"]
+                        d["extra_hold_seconds"] = float(row["Hold +sec"])
+                        d["duck_music"]         = bool(row["Duck music"])
+
+                # CRITICAL: filter plan to ready scenes only — montage.py:404
+                # raises if lengths mismatch.
+                ready_ids = {s.scene_id for s in ready_scenes}
+                matched_plan = {
+                    **plan,
+                    "scenes": [d for d in plan["scenes"] if d["scene_id"] in ready_ids],
+                }
+                video_paths = [Path(s.video_local_path) for s in ready_scenes]
+                with st.spinner(
+                    f"Composing storytelling cut from {len(video_paths)} clips…"
+                ):
+                    try:
+                        result = compile_from_edit_decisions(
+                            video_paths=video_paths,
+                            edit_decisions=matched_plan,
+                            output_path=montage_output,
+                            fps=int(out_fps),
+                        )
+                        # Persist the plan alongside the video for reproducibility
+                        try:
+                            (montage_output.with_suffix(".plan.json")).write_text(
+                                json.dumps(matched_plan, indent=2), encoding="utf-8"
+                            )
+                        except OSError:
+                            pass   # plan persistence is best-effort
+                        st.session_state.montage_path = str(result); save(); st.rerun()
+                    except Exception as e:
+                        st.error(
+                            f"Storytelling compose failed: {e}\n\n"
+                            "Try switching to **Simple** mode above as a fallback."
+                        )
+            if compile_disabled:
+                st.caption("⚠ Need at least 2 clips to compose a montage.")
+            st.caption("🔒 Runs entirely on your machine via FFmpeg. "
+                       "No models loaded, no API calls, no data leaves the box.")
 
     # ── Final video player + download ─────────────────────────────────────────
     montage = st.session_state.montage_path
